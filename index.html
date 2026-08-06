@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RubikMania — Aprende a resolver el cubo de Rubik</title>
+
+<!-- Polyfill de import maps para navegadores que aún no lo soportan de forma nativa -->
+<script async src="https://ga.jspm.io/npm:es-module-shims@1.10.0/dist/es-module-shims.js"></script>
+
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+    "three": "https://esm.sh/three@0.160.0",
+    "lucide-react": "https://esm.sh/lucide-react@0.383.0?external=react"
+  }
+}
+</script>
+
+<!-- Babel standalone: transforma JSX en el navegador, sin paso de build -->
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+
+<style>
+  html, body { margin: 0; padding: 0; background: #0d0e12; }
+  #root { min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-type="module" data-presets="react">
+import React, { useEffect, useRef, useState, useCallback } from "react";
+import { createRoot } from "react-dom/client";
+import * as THREE from "three";
+import { Play, Pause, ChevronLeft, ChevronRight, RotateCcw, BookOpen, Boxes } from "lucide-react";
+
+/* =========================================================================
+   DATOS: notación, algoritmos y glosario
+   ========================================================================= */
+
+const MOVE_NAME = { R: "Cara derecha", L: "Cara izquierda", U: "Cara superior", D: "Cara inferior", F: "Cara frontal", B: "Cara trasera" };
+
+function describeMove(mv) {
+  const letter = mv[0];
+  const suffix = mv.includes("2") ? "180°" : mv.includes("'") ? "sentido antihorario · 90°" : "sentido horario · 90°";
+  return `${MOVE_NAME[letter]} (${letter}) — ${suffix}`;
+}
+
+function materializeSteps(alg) {
+  if (alg.steps) return alg.steps;
+  return alg.formula.map((mv) => ({ move: mv, text: describeMove(mv) }));
+}
+
+const ALGORITHMS = {
+  2: [
+    {
+      id: "2x2-primera-cara",
+      name: "Primera cara",
+      tag: "Base",
+      formula: null,
+      description: "Forma una cara completa agrupando primero las esquinas por color, de manera intuitiva y sin fórmula fija.",
+      steps: [
+        { move: null, text: "Elige un color y localiza sus cuatro esquinas por el cubo." },
+        { move: null, text: "Fija una esquina como referencia y no vuelvas a moverla de sitio." },
+        { move: null, text: "Acerca cada esquina restante a la referencia, emparejando los colores laterales." },
+        { move: null, text: "Comprueba que la cara y los dos anillos laterales queden alineados." },
+      ],
+    },
+    {
+      id: "2x2-oll-sune",
+      name: "OLL — Sune",
+      tag: "Orientar última capa",
+      formula: ["R", "U", "R'", "U", "R", "U2", "R'"],
+      description: "Orienta las cuatro esquinas de la última capa para que todas muestren el mismo color hacia arriba.",
+      steps: null,
+    },
+    {
+      id: "2x2-pbl",
+      name: "PBL — Permutar capa final",
+      tag: "Permutar última capa",
+      formula: ["R2", "U", "R2", "U2", "R2", "U", "R2"],
+      description: "Intercambia la posición de las esquinas ya orientadas, dejando el cubo resuelto.",
+      steps: null,
+    },
+  ],
+  3: [
+    {
+      id: "3x3-cruz",
+      name: "Cruz blanca",
+      tag: "Base",
+      formula: null,
+      description: "Forma una cruz en la cara blanca alineando cada arista blanca con su centro lateral correspondiente.",
+      steps: [
+        { move: null, text: "Localiza las cuatro aristas que tienen blanco entre sus dos colores." },
+        { move: null, text: "Lleva cada arista blanca junto al centro lateral de su mismo color." },
+        { move: null, text: "Verifica que los cuatro brazos de la cruz coincidan con los centros vecinos." },
+      ],
+    },
+    {
+      id: "3x3-oll-cross",
+      name: "OLL — Cruz amarilla",
+      tag: "Orientar última capa",
+      formula: ["F", "R", "U", "R'", "U'", "F'"],
+      description: "Orienta las aristas de la última capa para formar una cruz amarilla en la cara superior.",
+      steps: null,
+    },
+    {
+      id: "3x3-pll-t",
+      name: "PLL — Permutación T",
+      tag: "Permutar última capa",
+      formula: ["R", "U", "R'", "U'", "R'", "F", "R2", "U'", "R'", "U'", "R", "U", "R'", "F'"],
+      description: "Intercambia dos esquinas y dos aristas de la última capa, dejando el cubo resuelto.",
+      steps: null,
+    },
+  ],
+};
+
+const GLOSSARY = [
+  { term: "Notación", def: "Sistema de letras (R, L, U, D, F, B) que indica qué cara girar. Un apóstrofe ( ' ) invierte el sentido y un 2 indica giro doble de 180°." },
+  { term: "Capa", def: "Conjunto de piezas que giran juntas al mover una cara del cubo." },
+  { term: "Algoritmo", def: "Secuencia fija de movimientos que produce un efecto conocido, usada para resolver una etapa concreta del cubo." },
+  { term: "OLL", def: "Orientar Última Capa: paso donde se giran las piezas finales para que todas muestren el mismo color hacia arriba." },
+  { term: "PLL / PBL", def: "Permutar Última Capa (PBL en el método Ortega de 2x2): paso donde se colocan en su sitio las piezas ya orientadas." },
+  { term: "Cubie", def: "Cada pieza individual del cubo: esquina, arista o centro." },
+  { term: "Vista isométrica", def: "Proyección 3D sin distorsión de perspectiva: las tres dimensiones se representan a la misma escala." },
+  { term: "Fórmula", def: "La secuencia de movimientos de un algoritmo, escrita en notación estándar, por ejemplo R U R' U'." },
+];
+
+const TABS = [
+  { id: 2, label: "2×2" },
+  { id: 3, label: "3×3" },
+];
+
+/* =========================================================================
+   MOTOR 3D — genérico para cualquier tamaño de cubo (2, 3, ...)
+   ========================================================================= */
+
+const COLORS = {
+  white: 0xf4f3ef,
+  yellow: 0xffd500,
+  red: 0xb8172c,
+  orange: 0xff5a1f,
+  green: 0x00975f,
+  blue: 0x0a54c4,
+  inner: 0x14161b,
+};
+
+const MOVE_META = {
+  R: { axis: "x", layer: (n) => n - 1, sign: -1 },
+  L: { axis: "x", layer: () => 0, sign: 1 },
+  U: { axis: "y", layer: (n) => n - 1, sign: -1 },
+  D: { axis: "y", layer: () => 0, sign: 1 },
+  F: { axis: "z", layer: (n) => n - 1, sign: -1 },
+  B: { axis: "z", layer: () => 0, sign: 1 },
+};
+
+function makeMaterial(hex) {
+  return new THREE.MeshStandardMaterial({ color: hex, roughness: 0.55, metalness: 0.06 });
+}
+const MAT_CACHE = {};
+function mat(hex) {
+  if (!MAT_CACHE[hex]) MAT_CACHE[hex] = makeMaterial(hex);
+  return MAT_CACHE[hex];
+}
+
+class RubikEngine {
+  constructor(mountEl, n) {
+    this.mountEl = mountEl;
+    this.n = n;
+    this.spacing = 1.03;
+    this.cubieSize = 0.94;
+    this.busy = false;
+    this.disposed = false;
+
+    this.scene = new THREE.Scene();
+    this.scene.background = null;
+
+    const frustum = 5;
+    const w = mountEl.clientWidth || 400;
+    const h = mountEl.clientHeight || 400;
+    const aspect = w / h;
+    this.camera = new THREE.OrthographicCamera(
+      (-frustum * aspect) / 2, (frustum * aspect) / 2, frustum / 2, -frustum / 2, 0.1, 100
+    );
+    this.spherical = { theta: Math.PI / 4, phi: Math.acos(1 / Math.sqrt(3)), radius: 6.2 };
+    this._syncCamera();
+
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setSize(w, h);
+    mountEl.innerHTML = "";
+    mountEl.appendChild(this.renderer.domElement);
+
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x33363f, 0.65);
+    this.scene.add(hemi);
+    const key = new THREE.DirectionalLight(0xffffff, 0.9);
+    key.position.set(5, 8, 6);
+    this.scene.add(key);
+    const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+    fill.position.set(-6, -3, -4);
+    this.scene.add(fill);
+
+    this.group = new THREE.Group();
+    this.scene.add(this.group);
+
+    this.cubies = [];
+    this._buildCube(n);
+
+    this._bindPointer();
+    this._resizeObserver = new ResizeObserver(() => this._onResize());
+    this._resizeObserver.observe(mountEl);
+
+    this._raf = requestAnimationFrame(this._tick);
+  }
+
+  _syncCamera() {
+    const { theta, phi, radius } = this.spherical;
+    this.camera.position.set(
+      radius * Math.sin(phi) * Math.sin(theta),
+      radius * Math.cos(phi),
+      radius * Math.sin(phi) * Math.cos(theta)
+    );
+    this.camera.lookAt(0, 0, 0);
+  }
+
+  _onResize() {
+    const w = this.mountEl.clientWidth || 400;
+    const h = this.mountEl.clientHeight || 400;
+    const aspect = w / h;
+    const frustum = 5;
+    this.camera.left = (-frustum * aspect) / 2;
+    this.camera.right = (frustum * aspect) / 2;
+    this.camera.top = frustum / 2;
+    this.camera.bottom = -frustum / 2;
+    this.camera.updateProjectionMatrix();
+    this.renderer.setSize(w, h);
+  }
+
+  _bindPointer() {
+    const el = this.renderer.domElement;
+    let dragging = false;
+    let lastX = 0, lastY = 0;
+    const down = (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; };
+    const move = (e) => {
+      if (!dragging) return;
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      lastX = e.clientX; lastY = e.clientY;
+      this.spherical.theta -= dx * 0.008;
+      this.spherical.phi = Math.min(Math.max(this.spherical.phi - dy * 0.008, 0.25), Math.PI - 0.25);
+      this._syncCamera();
+    };
+    const up = () => { dragging = false; };
+    el.addEventListener("pointerdown", down);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    this._unbindPointer = () => {
+      el.removeEventListener("pointerdown", down);
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+  }
+
+  _gridToWorld(i, off) { return (i - off) * this.spacing; }
+
+  _buildCube(n) {
+    this.n = n;
+    while (this.group.children.length) this.group.remove(this.group.children[0]);
+    this.cubies = [];
+    const off = (n - 1) / 2;
+    const geo = new THREE.BoxGeometry(this.cubieSize, this.cubieSize, this.cubieSize);
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        for (let k = 0; k < n; k++) {
+          const materials = [
+            i === n - 1 ? mat(COLORS.red) : mat(COLORS.inner),
+            i === 0 ? mat(COLORS.orange) : mat(COLORS.inner),
+            j === n - 1 ? mat(COLORS.white) : mat(COLORS.inner),
+            j === 0 ? mat(COLORS.yellow) : mat(COLORS.inner),
+            k === n - 1 ? mat(COLORS.green) : mat(COLORS.inner),
+            k === 0 ? mat(COLORS.blue) : mat(COLORS.inner),
+          ];
+          const mesh = new THREE.Mesh(geo, materials);
+          mesh.position.set(this._gridToWorld(i, off), this._gridToWorld(j, off), this._gridToWorld(k, off));
+          this.group.add(mesh);
+          this.cubies.push({ mesh, grid: { x: i, y: j, z: k } });
+        }
+      }
+    }
+  }
+
+  reset(n = this.n) { this._buildCube(n); }
+
+  _snap(mesh) {
+    const off = (this.n - 1) / 2;
+    ["x", "y", "z"].forEach((ax) => {
+      const idx = Math.round(mesh.position[ax] / this.spacing + off);
+      mesh.position[ax] = (idx - off) * this.spacing;
+    });
+    const m4 = new THREE.Matrix4().makeRotationFromQuaternion(mesh.quaternion);
+    const e = m4.elements;
+    [0, 1, 2, 4, 5, 6, 8, 9, 10].forEach((idx) => { e[idx] = Math.round(e[idx]); });
+    mesh.quaternion.setFromRotationMatrix(m4);
+    return {
+      x: Math.round(mesh.position.x / this.spacing + off),
+      y: Math.round(mesh.position.y / this.spacing + off),
+      z: Math.round(mesh.position.z / this.spacing + off),
+    };
+  }
+
+  applyMove(moveStr, duration = 320) {
+    return new Promise((resolve) => {
+      const letter = moveStr[0];
+      const meta = MOVE_META[letter];
+      if (!meta) return resolve();
+      const layerIndex = meta.layer(this.n);
+      let angle = (Math.PI / 2) * meta.sign;
+      if (moveStr.includes("2")) angle = Math.PI * meta.sign;
+      else if (moveStr.includes("'")) angle = -angle;
+
+      const selected = this.cubies.filter((c) => c.grid[meta.axis] === layerIndex);
+      const pivot = new THREE.Group();
+      this.group.add(pivot);
+      selected.forEach((c) => pivot.attach(c.mesh));
+
+      const start = performance.now();
+      const ease = (t) => (t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t);
+
+      const step = (now) => {
+        if (this.disposed) return;
+        const t = Math.min(1, (now - start) / duration);
+        pivot.rotation[meta.axis] = angle * ease(t);
+        if (t < 1) {
+          requestAnimationFrame(step);
+        } else {
+          selected.forEach((c) => {
+            this.group.attach(c.mesh);
+            c.grid = this._snap(c.mesh);
+          });
+          this.group.remove(pivot);
+          resolve();
+        }
+      };
+      requestAnimationFrame(step);
+    });
+  }
+
+  static invert(moveStr) {
+    if (moveStr.includes("2")) return moveStr;
+    if (moveStr.includes("'")) return moveStr[0];
+    return moveStr[0] + "'";
+  }
+
+  _tick = () => {
+    if (this.disposed) return;
+    this.renderer.render(this.scene, this.camera);
+    this._raf = requestAnimationFrame(this._tick);
+  };
+
+  dispose() {
+    this.disposed = true;
+    cancelAnimationFrame(this._raf);
+    this._resizeObserver?.disconnect();
+    this._unbindPointer?.();
+    this.renderer.dispose();
+    if (this.mountEl) this.mountEl.innerHTML = "";
+  }
+}
+
+/* =========================================================================
+   COMPONENTES DE UI
+   ========================================================================= */
+
+function Keycap({ move, active, dim }) {
+  return (
+    <span className={`keycap ${active ? "keycap--active" : ""} ${dim ? "keycap--dim" : ""}`}>
+      {move}
+    </span>
+  );
+}
+
+function Stage({ engineRef, n }) {
+  const mountRef = useRef(null);
+
+  useEffect(() => {
+    if (!mountRef.current) return;
+    engineRef.current = new RubikEngine(mountRef.current, n);
+    return () => { engineRef.current?.dispose(); engineRef.current = null; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [n]);
+
+  return (
+    <div className="stage-card">
+      <div className="stage-canvas" ref={mountRef} />
+      <div className="stage-hint">Arrastra para rotar la vista</div>
+    </div>
+  );
+}
+
+function AlgorithmPanel({ n, engineRef, onBusyChange }) {
+  const list = ALGORITHMS[n];
+  const [algIdx, setAlgIdx] = useState(0);
+  const [stepIdx, setStepIdx] = useState(-1);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const busyRef = useRef(false);
+  const playRef = useRef(false);
+
+  const alg = list[algIdx];
+  const steps = materializeSteps(alg);
+
+  const resetCube = useCallback(() => {
+    engineRef.current?.reset(n);
+    setStepIdx(-1);
+  }, [engineRef, n]);
+
+  useEffect(() => { resetCube(); setIsPlaying(false); playRef.current = false; }, [algIdx, n, resetCube]);
+
+  const setBusy = (v) => { busyRef.current = v; onBusyChange?.(v); };
+
+  const goForward = useCallback(async () => {
+    if (busyRef.current || stepIdx + 1 >= steps.length) return;
+    setBusy(true);
+    const step = steps[stepIdx + 1];
+    if (step.move) await engineRef.current?.applyMove(step.move);
+    setStepIdx((s) => s + 1);
+    setBusy(false);
+  }, [stepIdx, steps, engineRef]); // eslint-disable-line
+
+  const goBack = useCallback(async () => {
+    if (busyRef.current || stepIdx < 0) return;
+    setBusy(true);
+    const step = steps[stepIdx];
+    if (step.move) await engineRef.current?.applyMove(RubikEngine.invert(step.move));
+    setStepIdx((s) => s - 1);
+    setBusy(false);
+  }, [stepIdx, steps, engineRef]); // eslint-disable-line
+
+  const jumpTo = useCallback(async (target) => {
+    if (busyRef.current) return;
+    setBusy(true);
+    let cur = stepIdx;
+    while (cur < target) {
+      const step = steps[cur + 1];
+      if (step.move) await engineRef.current?.applyMove(step.move, 220);
+      cur += 1;
+      setStepIdx(cur);
+    }
+    while (cur > target) {
+      const step = steps[cur];
+      if (step.move) await engineRef.current?.applyMove(RubikEngine.invert(step.move), 220);
+      cur -= 1;
+      setStepIdx(cur);
+    }
+    setBusy(false);
+  }, [stepIdx, steps, engineRef]); // eslint-disable-line
+
+  // reproducción automática
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
+      while (playRef.current && !cancelled) {
+        if (stepIdx + 1 >= steps.length) { playRef.current = false; setIsPlaying(false); break; }
+        await goForward();
+        await new Promise((r) => setTimeout(r, 260));
+      }
+    }
+    if (isPlaying) { playRef.current = true; run(); }
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying]);
+
+  const togglePlay = () => {
+    if (isPlaying) { playRef.current = false; setIsPlaying(false); }
+    else { if (stepIdx + 1 >= steps.length) return; setIsPlaying(true); }
+  };
+
+  const currentMove = stepIdx >= 0 ? steps[stepIdx].move : null;
+
+  return (
+    <div className="algo-card">
+      <div className="algo-tabs">
+        {list.map((a, i) => (
+          <button
+            key={a.id}
+            className={`algo-tab ${i === algIdx ? "algo-tab--active" : ""}`}
+            onClick={() => { if (!busyRef.current) setAlgIdx(i); }}
+          >
+            {a.name}
+          </button>
+        ))}
+      </div>
+
+      <div className="algo-body">
+        <span className="algo-eyebrow">{alg.tag}</span>
+        <h3 className="algo-title">{alg.name}</h3>
+        <p className="algo-desc">{alg.description}</p>
+
+        {alg.formula && (
+          <div className="formula-row">
+            {alg.formula.map((mv, i) => (
+              <Keycap key={i} move={mv} active={i === stepIdx} dim={i > stepIdx} />
+            ))}
+          </div>
+        )}
+
+        <div className="step-list">
+          {steps.map((s, i) => (
+            <button
+              key={i}
+              className={`step-item ${i === stepIdx ? "step-item--active" : ""} ${i < stepIdx ? "step-item--done" : ""}`}
+              onClick={() => jumpTo(i)}
+            >
+              <span className="step-index">{String(i + 1).padStart(2, "0")}</span>
+              {s.move && <Keycap move={s.move} active={i === stepIdx} />}
+              <span className="step-text">{s.text}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div className="transport">
+        <button className="transport-btn" onClick={goBack} disabled={stepIdx < 0} aria-label="Paso anterior">
+          <ChevronLeft size={18} />
+        </button>
+        <button className="transport-btn transport-btn--play" onClick={togglePlay} aria-label={isPlaying ? "Pausar" : "Reproducir"}>
+          {isPlaying ? <Pause size={20} /> : <Play size={20} />}
+        </button>
+        <button className="transport-btn" onClick={goForward} disabled={stepIdx + 1 >= steps.length} aria-label="Siguiente paso">
+          <ChevronRight size={18} />
+        </button>
+        <div className="transport-progress">
+          Paso {Math.max(stepIdx + 1, 0)}/{steps.length}
+        </div>
+        <button className="transport-reset" onClick={() => { playRef.current = false; setIsPlaying(false); resetCube(); }}>
+          <RotateCcw size={14} /> Reiniciar
+        </button>
+      </div>
+
+      {currentMove && (
+        <div className="current-move-banner">
+          Ejecutando <strong>{currentMove}</strong> — {describeMove(currentMove)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function GlossarySection() {
+  return (
+    <div className="glossary-grid">
+      {GLOSSARY.map((g) => (
+        <div key={g.term} className="glossary-card">
+          <h4>{g.term}</h4>
+          <p>{g.def}</p>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* =========================================================================
+   APP
+   ========================================================================= */
+
+function RubikMania() {
+  const [n, setN] = useState(2);
+  const [view, setView] = useState("practice"); // practice | glossary
+  const engineRef = useRef(null);
+
+  return (
+    <div className="app-root">
+      <style>{CSS}</style>
+
+      <header className="header">
+        <div className="header-left">
+          <div className="logo-mark">
+            <span style={{ background: "#f4f3ef" }} />
+            <span style={{ background: "#ffd500" }} />
+            <span style={{ background: "#b8172c" }} />
+            <span style={{ background: "#0a54c4" }} />
+          </div>
+          <span className="logo-text">RUBIK<span className="logo-accent">MANIA</span></span>
+        </div>
+
+        <nav className="header-tabs">
+          {TABS.map((t) => (
+            <button
+              key={t.id}
+              className={`nav-tab ${view === "practice" && n === t.id ? "nav-tab--active" : ""}`}
+              onClick={() => { setN(t.id); setView("practice"); }}
+            >
+              <Boxes size={14} /> {t.label}
+            </button>
+          ))}
+        </nav>
+
+        <button
+          className={`glossary-btn ${view === "glossary" ? "glossary-btn--active" : ""}`}
+          onClick={() => setView(view === "glossary" ? "practice" : "glossary")}
+        >
+          <BookOpen size={14} /> Glosario
+        </button>
+      </header>
+
+      <main className="main">
+        {view === "practice" ? (
+          <div className="practice-grid">
+            <Stage engineRef={engineRef} n={n} />
+            <AlgorithmPanel n={n} engineRef={engineRef} />
+          </div>
+        ) : (
+          <>
+            <h2 className="section-title">Glosario</h2>
+            <GlossarySection />
+          </>
+        )}
+      </main>
+    </div>
+  );
+}
+
+/* =========================================================================
+   ESTILOS
+   ========================================================================= */
+
+const CSS = `
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap');
+
+* { box-sizing: border-box; }
+
+.app-root {
+  font-family: 'Inter', sans-serif;
+  background: #0d0e12;
+  color: #e9eaee;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- header ---------- */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 14px 24px;
+  border-bottom: 1px solid #1e2028;
+  background: linear-gradient(180deg, #121319 0%, #0d0e12 100%);
+}
+.header-left { display: flex; align-items: center; gap: 10px; }
+.logo-mark {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 2px;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  overflow: hidden;
+  transform: rotate(-6deg);
+}
+.logo-mark span { display: block; }
+.logo-text {
+  font-family: 'Space Grotesk', sans-serif;
+  font-weight: 700;
+  font-size: 19px;
+  letter-spacing: 0.01em;
+}
+.logo-accent { color: #ffd500; }
+
+.header-tabs { display: flex; gap: 6px; margin-left: 8px; }
+.nav-tab {
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid #23252e;
+  background: #15161c;
+  color: #9a9ea8;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s ease;
+}
+.nav-tab:hover { color: #e9eaee; border-color: #33353f; }
+.nav-tab--active { background: #ffd500; color: #16171d; border-color: #ffd500; }
+
+.glossary-btn {
+  margin-left: auto;
+  display: flex; align-items: center; gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid #23252e;
+  background: transparent;
+  color: #9a9ea8;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.glossary-btn:hover { color: #e9eaee; border-color: #33353f; }
+.glossary-btn--active { background: #1c1e26; color: #4fd1c5; border-color: #2a3a3a; }
+
+/* ---------- main layout ---------- */
+.main { padding: 22px; flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; }
+.section-title {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 20px;
+  margin: 4px 0 16px;
+}
+
+.practice-grid {
+  display: grid;
+  grid-template-columns: 1.1fr 1fr;
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 860px) {
+  .practice-grid { grid-template-columns: 1fr; }
+}
+
+/* ---------- stage (cube) ---------- */
+.stage-card {
+  background: radial-gradient(circle at 30% 20%, #1a1c24 0%, #101116 70%);
+  border: 1px solid #1e2028;
+  border-radius: 16px;
+  padding: 6px;
+  position: sticky;
+  top: 16px;
+}
+.stage-canvas { width: 100%; aspect-ratio: 1 / 1; border-radius: 12px; overflow: hidden; touch-action: none; cursor: grab; }
+.stage-canvas:active { cursor: grabbing; }
+.stage-hint { text-align: center; font-size: 11px; color: #62656f; padding: 8px 0 4px; letter-spacing: .02em; }
+
+/* ---------- algorithm card ---------- */
+.algo-card {
+  background: #14151b;
+  border: 1px solid #1e2028;
+  border-radius: 16px;
+  display: flex;
+  flex-direction: column;
+  min-height: 480px;
+}
+.algo-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 10px 10px 0;
+  overflow-x: auto;
+}
+.algo-tab {
+  padding: 8px 12px;
+  border-radius: 9px 9px 0 0;
+  border: none;
+  background: transparent;
+  color: #71747e;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.algo-tab--active { background: #1c1e26; color: #e9eaee; }
+
+.algo-body { padding: 16px 18px 4px; flex: 1; }
+.algo-eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #4fd1c5; font-weight: 600; }
+.algo-title { font-family: 'Space Grotesk', sans-serif; font-size: 19px; margin: 4px 0 8px; }
+.algo-desc { font-size: 13.5px; color: #a5a8b1; line-height: 1.5; margin-bottom: 14px; }
+
+.formula-row {
+  display: flex; flex-wrap: wrap; gap: 6px;
+  padding: 12px;
+  background: #101116;
+  border: 1px solid #1e2028;
+  border-radius: 10px;
+  margin-bottom: 16px;
+}
+.keycap {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  font-size: 13px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  background: #22242e;
+  color: #cfd2da;
+  border-bottom: 2px solid #33353f;
+}
+.keycap--active { background: #ffd500; color: #16171d; border-bottom-color: #c9a900; }
+.keycap--dim { opacity: .45; }
+
+.step-list { display: flex; flex-direction: column; gap: 6px; max-height: 240px; overflow-y: auto; padding-right: 4px; }
+.step-item {
+  display: flex; align-items: center; gap: 10px;
+  text-align: left;
+  padding: 9px 10px;
+  border-radius: 9px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #a5a8b1;
+  cursor: pointer;
+  font-size: 13px;
+}
+.step-item:hover { background: #191b22; }
+.step-item--active { background: #1c2420; border-color: #2a3a30; color: #e9eaee; }
+.step-item--done { color: #6f7280; }
+.step-index { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #52545e; width: 16px; }
+.step-text { flex: 1; line-height: 1.35; }
+
+.transport {
+  display: flex; align-items: center; gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid #1e2028;
+}
+.transport-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; height: 34px;
+  border-radius: 9px;
+  border: 1px solid #23252e;
+  background: #1a1c23;
+  color: #e9eaee;
+  cursor: pointer;
+}
+.transport-btn:disabled { opacity: .35; cursor: not-allowed; }
+.transport-btn--play { width: 42px; height: 42px; background: #ffd500; color: #16171d; border-color: #ffd500; }
+.transport-progress { font-size: 12px; color: #71747e; font-family: 'JetBrains Mono', monospace; margin-left: 4px; }
+.transport-reset {
+  margin-left: auto;
+  display: flex; align-items: center; gap: 5px;
+  background: none; border: none; color: #71747e;
+  font-size: 12px; cursor: pointer;
+}
+.transport-reset:hover { color: #e9eaee; }
+
+.current-move-banner {
+  padding: 9px 16px;
+  background: #171c26;
+  border-top: 1px solid #1e2028;
+  font-size: 12.5px;
+  color: #9fb8ff;
+  border-radius: 0 0 16px 16px;
+}
+
+/* ---------- glossary ---------- */
+.glossary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 12px;
+}
+.glossary-card {
+  background: #14151b;
+  border: 1px solid #1e2028;
+  border-radius: 12px;
+  padding: 16px;
+}
+.glossary-card h4 { font-family: 'Space Grotesk', sans-serif; font-size: 14.5px; margin: 0 0 6px; color: #ffd500; }
+.glossary-card p { font-size: 13px; color: #a5a8b1; line-height: 1.5; margin: 0; }
+`;
+
+const root = createRoot(document.getElementById("root"));
+root.render(<RubikMania />);
+</script>
+</body>
+</html>
