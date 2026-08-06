@@ -34,7 +34,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import * as THREE from "three";
-import { Play, Pause, ChevronLeft, ChevronRight, RotateCcw, BookOpen, Boxes } from "lucide-react";
+import { Play, Pause, ChevronLeft, ChevronRight, RotateCcw, BookOpen, Boxes, Shuffle } from "lucide-react";
 
 /* =========================================================================
    DATOS: notación, algoritmos y glosario
@@ -73,15 +73,31 @@ const ALGORITHMS = {
       name: "OLL — Sune",
       tag: "Orientar última capa",
       formula: ["R", "U", "R'", "U", "R", "U2", "R'"],
-      description: "Orienta las cuatro esquinas de la última capa para que todas muestren el mismo color hacia arriba.",
+      description: "Orienta las cuatro esquinas de la última capa para que todas muestren el mismo color hacia arriba, cuando solo una esquina ya está bien orientada.",
       steps: null,
     },
     {
-      id: "2x2-pbl",
-      name: "PBL — Permutar capa final",
+      id: "2x2-oll-antisune",
+      name: "OLL — Antisune",
+      tag: "Orientar última capa",
+      formula: ["R", "U2", "R'", "U'", "R", "U'", "R'"],
+      description: "El caso espejo del Sune: orienta las cuatro esquinas finales cuando el patrón de colores está invertido.",
+      steps: null,
+    },
+    {
+      id: "2x2-pbl-diagonal",
+      name: "PBL — Diagonal",
       tag: "Permutar última capa",
       formula: ["R2", "U", "R2", "U2", "R2", "U", "R2"],
-      description: "Intercambia la posición de las esquinas ya orientadas, dejando el cubo resuelto.",
+      description: "Intercambia dos parejas de esquinas en diagonal, dejando el cubo resuelto tras la orientación.",
+      steps: null,
+    },
+    {
+      id: "2x2-pbl-adyacente",
+      name: "PBL — Adyacente",
+      tag: "Permutar última capa",
+      formula: ["R'", "F", "R'", "B2", "R", "F'", "R'", "B2", "R2"],
+      description: "Intercambia dos esquinas adyacentes de la última capa, para el caso en que la diagonal no coincide.",
       steps: null,
     },
   ],
@@ -99,11 +115,27 @@ const ALGORITHMS = {
       ],
     },
     {
+      id: "3x3-f2l-basico",
+      name: "F2L — Insertar pareja",
+      tag: "Primeras dos capas",
+      formula: ["R", "U", "R'", "U'"],
+      description: "El movimiento más común para encajar una pareja de esquina y arista en su hueco de la segunda capa.",
+      steps: null,
+    },
+    {
       id: "3x3-oll-cross",
       name: "OLL — Cruz amarilla",
       tag: "Orientar última capa",
       formula: ["F", "R", "U", "R'", "U'", "F'"],
       description: "Orienta las aristas de la última capa para formar una cruz amarilla en la cara superior.",
+      steps: null,
+    },
+    {
+      id: "3x3-oll-t",
+      name: "OLL — Esquina y arista (T)",
+      tag: "Orientar última capa",
+      formula: ["R", "U", "R'", "U'", "R'", "F", "R", "F'"],
+      description: "Orienta simultáneamente una esquina y dos aristas cuando la cara superior forma una 'T' de color.",
       steps: null,
     },
     {
@@ -114,8 +146,33 @@ const ALGORITHMS = {
       description: "Intercambia dos esquinas y dos aristas de la última capa, dejando el cubo resuelto.",
       steps: null,
     },
+    {
+      id: "3x3-pll-ua",
+      name: "PLL — Permutación Ua",
+      tag: "Permutar última capa",
+      formula: ["R", "U'", "R", "U", "R", "U", "R", "U'", "R'", "U'", "R2"],
+      description: "Rota tres aristas de la última capa en sentido horario, manteniendo las esquinas en su sitio.",
+      steps: null,
+    },
   ],
 };
+
+/* Genera una mezcla aleatoria de N movimientos, evitando repetir eje consecutivo */
+function generateScramble(length) {
+  const faces = ["R", "L", "U", "D", "F", "B"];
+  const axisOf = { R: "x", L: "x", U: "y", D: "y", F: "z", B: "z" };
+  const suffixes = ["", "'", "2"];
+  const seq = [];
+  let lastAxis = null;
+  for (let i = 0; i < length; i++) {
+    let face;
+    do { face = faces[Math.floor(Math.random() * faces.length)]; } while (axisOf[face] === lastAxis);
+    lastAxis = axisOf[face];
+    const suf = suffixes[Math.floor(Math.random() * suffixes.length)];
+    seq.push(face + suf);
+  }
+  return seq;
+}
 
 const GLOSSARY = [
   { term: "Notación", def: "Sistema de letras (R, L, U, D, F, B) que indica qué cara girar. Un apóstrofe ( ' ) invierte el sentido y un 2 indica giro doble de 180°." },
@@ -381,30 +438,69 @@ function Keycap({ move, active, dim }) {
   );
 }
 
-function Stage({ engineRef, n }) {
+function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange }) {
   const mountRef = useRef(null);
+  const [scrambleSeq, setScrambleSeq] = useState(null);
 
   useEffect(() => {
     if (!mountRef.current) return;
     engineRef.current = new RubikEngine(mountRef.current, n);
+    setScrambleSeq(null);
     return () => { engineRef.current?.dispose(); engineRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [n]);
+
+  const scramble = async () => {
+    if (busyRef.current || !engineRef.current) return;
+    setBusy(true);
+    const length = n === 2 ? 9 : 20;
+    const seq = generateScramble(length);
+    setScrambleSeq(seq);
+    for (const mv of seq) {
+      await engineRef.current.applyMove(mv, 150);
+    }
+    setBusy(false);
+    onExternalChange?.();
+  };
+
+  const solve = () => {
+    if (busyRef.current || !engineRef.current) return;
+    engineRef.current.reset(n);
+    setScrambleSeq(null);
+    onExternalChange?.();
+  };
 
   return (
     <div className="stage-card">
       <div className="stage-canvas" ref={mountRef} />
       <div className="stage-hint">Arrastra para rotar la vista</div>
+
+      <div className="scramble-bar">
+        <button className="scramble-btn" onClick={scramble} disabled={busy}>
+          <Shuffle size={14} /> Mezclar cubo
+        </button>
+        <button className="scramble-btn scramble-btn--ghost" onClick={solve} disabled={busy}>
+          <RotateCcw size={14} /> Cubo resuelto
+        </button>
+      </div>
+
+      {scrambleSeq && (
+        <div className="scramble-sequence">
+          <span className="scramble-label">Mezcla aplicada</span>
+          <div className="scramble-moves">
+            {scrambleSeq.map((mv, i) => <Keycap key={i} move={mv} />)}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function AlgorithmPanel({ n, engineRef, onBusyChange }) {
+function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal }) {
   const list = ALGORITHMS[n];
   const [algIdx, setAlgIdx] = useState(0);
   const [stepIdx, setStepIdx] = useState(-1);
   const [isPlaying, setIsPlaying] = useState(false);
-  const busyRef = useRef(false);
   const playRef = useRef(false);
 
   const alg = list[algIdx];
@@ -417,7 +513,13 @@ function AlgorithmPanel({ n, engineRef, onBusyChange }) {
 
   useEffect(() => { resetCube(); setIsPlaying(false); playRef.current = false; }, [algIdx, n, resetCube]);
 
-  const setBusy = (v) => { busyRef.current = v; onBusyChange?.(v); };
+  // el cubo cambió por fuera de este panel (p. ej. una mezcla): olvida el progreso sin tocar el cubo
+  useEffect(() => {
+    playRef.current = false;
+    setIsPlaying(false);
+    setStepIdx(-1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [resetSignal]);
 
   const goForward = useCallback(async () => {
     if (busyRef.current || stepIdx + 1 >= steps.length) return;
@@ -567,7 +669,13 @@ function GlossarySection() {
 function RubikMania() {
   const [n, setN] = useState(2);
   const [view, setView] = useState("practice"); // practice | glossary
+  const [busy, setBusyState] = useState(false);
+  const [resetSignal, setResetSignal] = useState(0);
   const engineRef = useRef(null);
+  const busyRef = useRef(false);
+
+  const setBusy = useCallback((v) => { busyRef.current = v; setBusyState(v); }, []);
+  const notifyExternalChange = useCallback(() => setResetSignal((s) => s + 1), []);
 
   return (
     <div className="app-root">
@@ -607,8 +715,21 @@ function RubikMania() {
       <main className="main">
         {view === "practice" ? (
           <div className="practice-grid">
-            <Stage engineRef={engineRef} n={n} />
-            <AlgorithmPanel n={n} engineRef={engineRef} />
+            <Stage
+              engineRef={engineRef}
+              n={n}
+              busyRef={busyRef}
+              busy={busy}
+              setBusy={setBusy}
+              onExternalChange={notifyExternalChange}
+            />
+            <AlgorithmPanel
+              n={n}
+              engineRef={engineRef}
+              busyRef={busyRef}
+              setBusy={setBusy}
+              resetSignal={resetSignal}
+            />
           </div>
         ) : (
           <>
@@ -628,7 +749,9 @@ function RubikMania() {
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;700&display=swap');
 
+html, body { overflow-x: hidden; }
 * { box-sizing: border-box; }
+img, svg { max-width: 100%; }
 
 .app-root {
   font-family: 'Inter', sans-serif;
@@ -642,8 +765,9 @@ const CSS = `
 /* ---------- header ---------- */
 .header {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 28px;
+  gap: 12px 28px;
   padding: 14px 24px;
   border-bottom: 1px solid #1e2028;
   background: linear-gradient(180deg, #121319 0%, #0d0e12 100%);
@@ -680,6 +804,7 @@ const CSS = `
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
   transition: all .15s ease;
 }
 .nav-tab:hover { color: #e9eaee; border-color: #33353f; }
@@ -696,12 +821,21 @@ const CSS = `
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+  white-space: nowrap;
 }
 .glossary-btn:hover { color: #e9eaee; border-color: #33353f; }
 .glossary-btn--active { background: #1c1e26; color: #4fd1c5; border-color: #2a3a3a; }
 
+@media (max-width: 560px) {
+  .header { padding: 12px 14px; gap: 10px; }
+  .header-tabs { order: 3; width: 100%; margin-left: 0; }
+  .nav-tab { flex: 1; justify-content: center; }
+  .glossary-btn { padding: 7px 10px; font-size: 12px; }
+  .logo-text { font-size: 16px; }
+}
+
 /* ---------- main layout ---------- */
-.main { padding: 22px; flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; }
+.main { padding: 22px; flex: 1; max-width: 1200px; width: 100%; margin: 0 auto; min-width: 0; }
 .section-title {
   font-family: 'Space Grotesk', sans-serif;
   font-size: 20px;
@@ -714,8 +848,18 @@ const CSS = `
   gap: 18px;
   align-items: start;
 }
+/* los hijos de un grid tienen min-width:auto por defecto: si el contenido no
+   se encoge (una fila de controles, la fórmula), el track crece y saca la
+   página fuera de la pantalla. min-width:0 permite que sí se encojan. */
+.practice-grid > * { min-width: 0; }
+
 @media (max-width: 860px) {
   .practice-grid { grid-template-columns: 1fr; }
+  .stage-card { position: static; }
+}
+@media (max-width: 560px) {
+  .main { padding: 14px; }
+  .practice-grid { gap: 14px; }
 }
 
 /* ---------- stage (cube) ---------- */
@@ -730,6 +874,27 @@ const CSS = `
 .stage-canvas { width: 100%; aspect-ratio: 1 / 1; border-radius: 12px; overflow: hidden; touch-action: none; cursor: grab; }
 .stage-canvas:active { cursor: grabbing; }
 .stage-hint { text-align: center; font-size: 11px; color: #62656f; padding: 8px 0 4px; letter-spacing: .02em; }
+
+.scramble-bar { display: flex; gap: 8px; padding: 6px 8px 4px; }
+.scramble-btn {
+  flex: 1;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid #2a2c36;
+  background: #ffd500;
+  color: #16171d;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: opacity .15s ease;
+}
+.scramble-btn--ghost { background: transparent; color: #c7cad2; border-color: #23252e; }
+.scramble-btn:disabled { opacity: .4; cursor: not-allowed; }
+
+.scramble-sequence { padding: 4px 10px 10px; }
+.scramble-label { display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em; color: #62656f; margin-bottom: 6px; }
+.scramble-moves { display: flex; flex-wrap: wrap; gap: 5px; }
 
 /* ---------- algorithm card ---------- */
 .algo-card {
@@ -762,7 +927,7 @@ const CSS = `
 .algo-body { padding: 16px 18px 4px; flex: 1; }
 .algo-eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #4fd1c5; font-weight: 600; }
 .algo-title { font-family: 'Space Grotesk', sans-serif; font-size: 19px; margin: 4px 0 8px; }
-.algo-desc { font-size: 13.5px; color: #a5a8b1; line-height: 1.5; margin-bottom: 14px; }
+.algo-desc { font-size: 13.5px; color: #a5a8b1; line-height: 1.5; margin-bottom: 14px; min-width: 0; }
 
 .formula-row {
   display: flex; flex-wrap: wrap; gap: 6px;
@@ -801,12 +966,26 @@ const CSS = `
 .step-item--active { background: #1c2420; border-color: #2a3a30; color: #e9eaee; }
 .step-item--done { color: #6f7280; }
 .step-index { font-family: 'JetBrains Mono', monospace; font-size: 10.5px; color: #52545e; width: 16px; }
-.step-text { flex: 1; line-height: 1.35; }
+.step-text { flex: 1; min-width: 0; line-height: 1.35; }
 
 .transport {
-  display: flex; align-items: center; gap: 8px;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
   padding: 12px 16px;
   border-top: 1px solid #1e2028;
+}
+.transport-progress { font-size: 12px; color: #71747e; font-family: 'JetBrains Mono', monospace; margin-left: 4px; white-space: nowrap; }
+.transport-reset {
+  margin-left: auto;
+  display: flex; align-items: center; gap: 5px;
+  background: none; border: none; color: #71747e;
+  font-size: 12px; cursor: pointer;
+  white-space: nowrap;
+}
+.transport-reset:hover { color: #e9eaee; }
+
+@media (max-width: 380px) {
+  .transport-progress { order: 4; width: 100%; margin-left: 0; }
+  .transport-reset { order: 5; margin-left: auto; }
 }
 .transport-btn {
   display: flex; align-items: center; justify-content: center;
@@ -819,14 +998,6 @@ const CSS = `
 }
 .transport-btn:disabled { opacity: .35; cursor: not-allowed; }
 .transport-btn--play { width: 42px; height: 42px; background: #ffd500; color: #16171d; border-color: #ffd500; }
-.transport-progress { font-size: 12px; color: #71747e; font-family: 'JetBrains Mono', monospace; margin-left: 4px; }
-.transport-reset {
-  margin-left: auto;
-  display: flex; align-items: center; gap: 5px;
-  background: none; border: none; color: #71747e;
-  font-size: 12px; cursor: pointer;
-}
-.transport-reset:hover { color: #e9eaee; }
 
 .current-move-banner {
   padding: 9px 16px;
@@ -837,10 +1008,15 @@ const CSS = `
   border-radius: 0 0 16px 16px;
 }
 
+@media (max-width: 560px) {
+  .algo-card { min-height: 0; }
+  .algo-body { padding: 14px 14px 4px; }
+}
+
 /* ---------- glossary ---------- */
 .glossary-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 12px;
 }
 .glossary-card {
