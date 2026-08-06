@@ -340,9 +340,11 @@ class RubikEngine {
   _buildCube(n) {
     this.n = n;
     while (this.group.children.length) this.group.remove(this.group.children[0]);
+    this._geo?.dispose(); // libera la geometría de la construcción anterior antes de crear otra
     this.cubies = [];
     const off = (n - 1) / 2;
     const geo = new THREE.BoxGeometry(this.cubieSize, this.cubieSize, this.cubieSize);
+    this._geo = geo;
     for (let i = 0; i < n; i++) {
       for (let j = 0; j < n; j++) {
         for (let k = 0; k < n; k++) {
@@ -417,7 +419,7 @@ class RubikEngine {
       const ease = (t) => (t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t);
 
       const step = (now) => {
-        if (this.disposed) return;
+        if (this.disposed) { resolve(); return; } // nunca dejar una promesa colgada por un motor destruido a mitad de animación
         const t = Math.min(1, (now - start) / duration);
         pivot.rotation[meta.axis] = angle * ease(t);
         if (t < 1) {
@@ -450,6 +452,7 @@ class RubikEngine {
     cancelAnimationFrame(this._raf);
     this._resizeObserver?.disconnect();
     this._unbindPointer?.();
+    this._geo?.dispose();
     this.renderer.dispose();
     if (this.mountEl) this.mountEl.innerHTML = "";
   }
@@ -964,13 +967,16 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
     if (busyRef.current || !engineRef.current) return;
     setBusy(true);
     setSolverStatus(null);
-    const length = n === 2 ? 9 : 20;
-    const seq = generateScramble(length);
-    setScrambleSeq(seq);
-    for (const mv of seq) {
-      await engineRef.current.applyMove(mv, 150);
+    try {
+      const length = n === 2 ? 9 : 20;
+      const seq = generateScramble(length);
+      setScrambleSeq(seq);
+      for (const mv of seq) {
+        await engineRef.current.applyMove(mv, 150);
+      }
+    } finally {
+      setBusy(false);
     }
-    setBusy(false);
     onExternalChange?.();
   };
 
@@ -986,25 +992,26 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
     if (busyRef.current || !engineRef.current) return;
     setBusy(true);
     setSolverStatus("thinking");
-    await new Promise((r) => setTimeout(r, 30)); // deja pintar el estado "Resolviendo…"
-    const state = engineRef.current.getAbstractState();
-
     let lesson = null;
-    if (n === 2) {
-      const moves = await solve2x2(state, { maxDepth: 18, timeBudgetMs: 12000 });
-      if (moves) lesson = buildLesson([{ key: "sol2x2", moves: simplifySeq(moves) }]);
-    } else {
-      const phases = solve3x3Method(state);
-      if (phases) lesson = buildLesson(phases);
+    try {
+      await new Promise((r) => setTimeout(r, 30)); // deja pintar el estado "Resolviendo…"
+      const state = engineRef.current.getAbstractState();
+      if (n === 2) {
+        const moves = await solve2x2(state, { maxDepth: 18, timeBudgetMs: 12000 });
+        if (moves) lesson = buildLesson([{ key: "sol2x2", moves: simplifySeq(moves) }]);
+      } else {
+        const phases = solve3x3Method(state);
+        if (phases) lesson = buildLesson(phases);
+      }
+    } finally {
+      setBusy(false);
     }
 
     if (!lesson || !lesson.steps.length) {
       setSolverStatus("failed");
-      setBusy(false);
       return;
     }
     setSolverStatus(null);
-    setBusy(false);
     onLesson?.(lesson);
   };
 
@@ -1058,15 +1065,20 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
   const setupCase = useCallback(async () => {
     if (inLesson) return;
     const myId = ++setupIdRef.current;
-    engineRef.current?.reset(n);
-    setStepIdx(-1);
-    if (alg.formula && alg.formula.length) {
-      setBusy(true);
-      const setup = computeSetup(alg.formula);
-      for (const mv of setup) {
-        if (setupIdRef.current !== myId) return; // se seleccionó otro algoritmo mientras tanto
-        await engineRef.current?.applyMove(mv, 130);
+    setBusy(true);
+    try {
+      engineRef.current?.reset(n);
+      setStepIdx(-1);
+      if (alg.formula && alg.formula.length) {
+        const setup = computeSetup(alg.formula);
+        for (const mv of setup) {
+          if (setupIdRef.current !== myId) return; // se seleccionó otro algoritmo mientras tanto
+          await engineRef.current?.applyMove(mv, 130);
+        }
       }
+    } finally {
+      // solo el intento más reciente puede soltar el bloqueo: si nos superó otro
+      // setupCase, es SU responsabilidad liberarlo al terminar, no la nuestra.
       if (setupIdRef.current === myId) setBusy(false);
     }
   }, [engineRef, n, alg, setBusy, inLesson]);
@@ -1085,41 +1097,50 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
   const goForward = useCallback(async () => {
     if (busyRef.current || stepIdx + 1 >= steps.length) return;
     setBusy(true);
-    const step = steps[stepIdx + 1];
-    if (step.move) await engineRef.current?.applyMove(step.move);
-    setStepIdx((s) => s + 1);
-    setBusy(false);
+    try {
+      const step = steps[stepIdx + 1];
+      if (step.move) await engineRef.current?.applyMove(step.move);
+      setStepIdx((s) => s + 1);
+    } finally {
+      setBusy(false);
+    }
   }, [stepIdx, steps, engineRef]); // eslint-disable-line
 
   const goBack = useCallback(async () => {
     if (busyRef.current || stepIdx < 0) return;
     setBusy(true);
-    const step = steps[stepIdx];
-    if (step.move) await engineRef.current?.applyMove(RubikEngine.invert(step.move));
-    setStepIdx((s) => s - 1);
-    setBusy(false);
+    try {
+      const step = steps[stepIdx];
+      if (step.move) await engineRef.current?.applyMove(RubikEngine.invert(step.move));
+      setStepIdx((s) => s - 1);
+    } finally {
+      setBusy(false);
+    }
   }, [stepIdx, steps, engineRef]); // eslint-disable-line
 
   const jumpTo = useCallback(async (target) => {
     if (busyRef.current) return;
     setBusy(true);
-    let cur = stepIdx;
-    while (cur < target) {
-      const step = steps[cur + 1];
-      if (step.move) await engineRef.current?.applyMove(step.move, 220);
-      cur += 1;
-      setStepIdx(cur);
+    try {
+      let cur = stepIdx;
+      while (cur < target) {
+        const step = steps[cur + 1];
+        if (step.move) await engineRef.current?.applyMove(step.move, 220);
+        cur += 1;
+        setStepIdx(cur);
+      }
+      while (cur > target) {
+        const step = steps[cur];
+        if (step.move) await engineRef.current?.applyMove(RubikEngine.invert(step.move), 220);
+        cur -= 1;
+        setStepIdx(cur);
+      }
+    } finally {
+      setBusy(false);
     }
-    while (cur > target) {
-      const step = steps[cur];
-      if (step.move) await engineRef.current?.applyMove(RubikEngine.invert(step.move), 220);
-      cur -= 1;
-      setStepIdx(cur);
-    }
-    setBusy(false);
   }, [stepIdx, steps, engineRef]); // eslint-disable-line
 
-  // reproducción automática: se dispara UN paso por render, con datos siempre frescos
+  // reproducción automática: se dispara UN paso por render, con datos siempre frescas
   // (evita el bug clásico de closures obsoletos dentro de un bucle manual)
   useEffect(() => {
     if (!isPlaying) return;
@@ -1130,8 +1151,9 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
   }, [isPlaying, stepIdx, steps.length, goForward]);
 
   const togglePlay = () => {
-    if (isPlaying) { setIsPlaying(false); }
-    else { if (stepIdx + 1 >= steps.length) return; setIsPlaying(true); }
+    if (isPlaying) { setIsPlaying(false); return; }
+    if (busyRef.current || stepIdx + 1 >= steps.length) return;
+    setIsPlaying(true);
   };
 
   const currentMove = stepIdx >= 0 ? steps[stepIdx].move : null;
