@@ -53,6 +53,21 @@ function materializeSteps(alg) {
   return alg.formula.map((mv) => ({ move: mv, text: describeMove(mv) }));
 }
 
+/* Invierte un movimiento: R -> R', R' -> R, R2 -> R2 */
+function invertMove(mv) {
+  if (mv.includes("2")) return mv;
+  if (mv.includes("'")) return mv[0];
+  return mv[0] + "'";
+}
+
+/* El "caso" que resuelve un algoritmo es, por definición, el resultado de
+   aplicarle su secuencia inversa a un cubo resuelto. Por eso preparamos el
+   cubo así antes de reproducir la fórmula: al terminar los N pasos, el
+   algoritmo deshace exactamente ese setup y el cubo queda resuelto. */
+function computeSetup(formula) {
+  return [...formula].reverse().map(invertMove);
+}
+
 const ALGORITHMS = {
   2: [
     {
@@ -405,9 +420,7 @@ class RubikEngine {
   }
 
   static invert(moveStr) {
-    if (moveStr.includes("2")) return moveStr;
-    if (moveStr.includes("'")) return moveStr[0];
-    return moveStr[0] + "'";
+    return invertMove(moveStr);
   }
 
   _tick = () => {
@@ -506,12 +519,24 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal }) {
   const alg = list[algIdx];
   const steps = materializeSteps(alg);
 
-  const resetCube = useCallback(() => {
+  const setupIdRef = useRef(0);
+
+  const setupCase = useCallback(async () => {
+    const myId = ++setupIdRef.current;
     engineRef.current?.reset(n);
     setStepIdx(-1);
-  }, [engineRef, n]);
+    if (alg.formula && alg.formula.length) {
+      setBusy(true);
+      const setup = computeSetup(alg.formula);
+      for (const mv of setup) {
+        if (setupIdRef.current !== myId) return; // se seleccionó otro algoritmo mientras tanto
+        await engineRef.current?.applyMove(mv, 130);
+      }
+      if (setupIdRef.current === myId) setBusy(false);
+    }
+  }, [engineRef, n, alg, setBusy]);
 
-  useEffect(() => { resetCube(); setIsPlaying(false); playRef.current = false; }, [algIdx, n, resetCube]);
+  useEffect(() => { setupCase(); setIsPlaying(false); playRef.current = false; }, [algIdx, n, setupCase]);
 
   // el cubo cambió por fuera de este panel (p. ej. una mezcla): olvida el progreso sin tocar el cubo
   useEffect(() => {
@@ -579,6 +604,8 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal }) {
   };
 
   const currentMove = stepIdx >= 0 ? steps[stepIdx].move : null;
+  const isReady = alg.formula && stepIdx === -1;
+  const isSolved = alg.formula && stepIdx === steps.length - 1;
 
   return (
     <div className="algo-card">
@@ -598,6 +625,11 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal }) {
         <span className="algo-eyebrow">{alg.tag}</span>
         <h3 className="algo-title">{alg.name}</h3>
         <p className="algo-desc">{alg.description}</p>
+        {alg.formula && (
+          <p className="algo-note">
+            El cubo ya está preparado en el caso que resuelve este algoritmo. Sigue los pasos y comprueba cómo, al llegar al último, queda resuelto.
+          </p>
+        )}
 
         {alg.formula && (
           <div className="formula-row">
@@ -635,16 +667,24 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal }) {
         <div className="transport-progress">
           Paso {Math.max(stepIdx + 1, 0)}/{steps.length}
         </div>
-        <button className="transport-reset" onClick={() => { playRef.current = false; setIsPlaying(false); resetCube(); }}>
+        <button className="transport-reset" onClick={() => { playRef.current = false; setIsPlaying(false); setupCase(); }}>
           <RotateCcw size={14} /> Reiniciar
         </button>
       </div>
 
-      {currentMove && (
-        <div className="current-move-banner">
+      {isSolved ? (
+        <div className="status-banner status-banner--solved">
+          ✓ Cubo resuelto — así resuelve este algoritmo el caso que tenía preparado.
+        </div>
+      ) : currentMove ? (
+        <div className="status-banner status-banner--move">
           Ejecutando <strong>{currentMove}</strong> — {describeMove(currentMove)}
         </div>
-      )}
+      ) : isReady ? (
+        <div className="status-banner status-banner--ready">
+          Caso preparado. Dale a play para ver cómo se resuelve.
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -928,6 +968,7 @@ img, svg { max-width: 100%; }
 .algo-eyebrow { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: #4fd1c5; font-weight: 600; }
 .algo-title { font-family: 'Space Grotesk', sans-serif; font-size: 19px; margin: 4px 0 8px; }
 .algo-desc { font-size: 13.5px; color: #a5a8b1; line-height: 1.5; margin-bottom: 14px; min-width: 0; }
+.algo-note { font-size: 12px; color: #8a93c9; background: #14182a; border: 1px solid #22263f; border-radius: 8px; padding: 8px 10px; margin: -6px 0 14px; line-height: 1.4; }
 
 .formula-row {
   display: flex; flex-wrap: wrap; gap: 6px;
@@ -999,14 +1040,15 @@ img, svg { max-width: 100%; }
 .transport-btn:disabled { opacity: .35; cursor: not-allowed; }
 .transport-btn--play { width: 42px; height: 42px; background: #ffd500; color: #16171d; border-color: #ffd500; }
 
-.current-move-banner {
+.status-banner {
   padding: 9px 16px;
-  background: #171c26;
   border-top: 1px solid #1e2028;
   font-size: 12.5px;
-  color: #9fb8ff;
   border-radius: 0 0 16px 16px;
 }
+.status-banner--move { background: #171c26; color: #9fb8ff; }
+.status-banner--ready { background: #1a1c26; color: #c9a8ff; }
+.status-banner--solved { background: #16241d; color: #7fe0a8; font-weight: 600; }
 
 @media (max-width: 560px) {
   .algo-card { min-height: 0; }
