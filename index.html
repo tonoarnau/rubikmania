@@ -1157,8 +1157,9 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
   };
 
   const currentMove = stepIdx >= 0 ? steps[stepIdx].move : null;
-  const isReady = !inLesson && alg.formula && stepIdx === -1;
-  const isSolved = stepIdx === steps.length - 1 && (inLesson || alg.formula);
+  const isReady = !inLesson && steps.length > 0 && stepIdx === -1;
+  const isSolved = steps.length > 0 && stepIdx === steps.length - 1;
+  const hasFormula = inLesson || !!alg.formula;
   const currentPhase = inLesson && stepIdx >= 0 ? steps[stepIdx] : null;
 
   return (
@@ -1256,7 +1257,9 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
 
       {isSolved ? (
         <div className="status-banner status-banner--solved">
-          ✓ Cubo resuelto — así resuelve este algoritmo el caso que tenía preparado.
+          {hasFormula
+            ? "✓ Cubo resuelto — así resuelve este algoritmo el caso que tenía preparado."
+            : "✓ Guía completa — repítela las veces que quieras con Reiniciar."}
         </div>
       ) : currentMove ? (
         <div className="status-banner status-banner--move">
@@ -1264,7 +1267,7 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
         </div>
       ) : isReady ? (
         <div className="status-banner status-banner--ready">
-          Caso preparado. Dale a play para ver cómo se resuelve.
+          {hasFormula ? "Caso preparado. Dale a play para ver cómo se resuelve." : "Lista para empezar. Dale a play o avanza paso a paso."}
         </div>
       ) : null}
     </div>
