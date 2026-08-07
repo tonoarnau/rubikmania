@@ -516,167 +516,6 @@ function isPieceSolvedAbstract(piece) { return sPosEq(piece.cur, piece.home) && 
 const S_ALL_MOVES = [];
 for (const letter of ["R","L","U","D","F","B"]) for (const suf of ["", "'", "2"]) S_ALL_MOVES.push(letter + suf);
 
-/* --- modelo reducido (solo para 2x2: 8 posiciones de esquina) --- */
-const S_CANON = [S_IDENTITY, [0,-1,0, 1,0,0, 0,0,1], [1,0,0, 0,0,-1, 0,1,0]];
-function twistClass(ori) {
-  const v = sMatVec(ori, { x: 0, y: 1, z: 0 });
-  if (v.y !== 0) return 0;
-  if (v.x !== 0) return 1;
-  return 2;
-}
-function posIndex2(x, y, z) { return x*4 + y*2 + z; }
-function buildMoveTables2x2() {
-  const tables = {};
-  for (const mv of S_ALL_MOVES) {
-    const M = sMoveMatrix(mv);
-    const s = { n: 2, pieces: [] };
-    for (let i=0;i<2;i++) for (let j=0;j<2;j++) for (let k=0;k<2;k++) s.pieces.push({ home:{x:i,y:j,z:k}, cur:{x:i,y:j,z:k}, ori:S_IDENTITY.slice() });
-    applyAbstractMove(s, mv);
-    const pi = new Array(8);
-    for (let p = 0; p < 8; p++) pi[p] = p;
-    for (const piece of s.pieces) {
-      const from = posIndex2(piece.home.x, piece.home.y, piece.home.z);
-      const to = posIndex2(piece.cur.x, piece.cur.y, piece.cur.z);
-      pi[from] = to;
-    }
-    const oriT = S_CANON.map((m) => twistClass(sMatMul(M, m)));
-    tables[mv] = { pi, oriT };
-  }
-  return tables;
-}
-const S_MOVE_TABLES = buildMoveTables2x2();
-function applyReduced(red, mv) {
-  const { pi, oriT } = S_MOVE_TABLES[mv];
-  const newPerm = new Array(8), newOri = new Array(8);
-  for (let p = 0; p < 8; p++) {
-    newPerm[pi[p]] = red.perm[p];
-    newOri[pi[p]] = pi[p] === p ? red.ori[p] : oriT[red.ori[p]];
-  }
-  return { perm: newPerm, ori: newOri };
-}
-function reducedFromAbstract(state) {
-  const perm = new Array(8), ori = new Array(8);
-  for (const piece of state.pieces) {
-    const pos = posIndex2(piece.cur.x, piece.cur.y, piece.cur.z);
-    perm[pos] = piece.home.x*4 + piece.home.y*2 + piece.home.z;
-    ori[pos] = twistClass(piece.ori);
-  }
-  return { perm, ori };
-}
-
-/* --- tablas de distancia exacta (pattern databases), BFS pequeño y rápido --- */
-function sFactorial(k) { let r = 1; for (let i = 2; i <= k; i++) r *= i; return r; }
-const S_FACT8 = sFactorial(8);
-function permToIndex(perm) {
-  const items = [0,1,2,3,4,5,6,7];
-  let idx = 0;
-  for (let i = 0; i < 8; i++) {
-    const pos = items.indexOf(perm[i]);
-    items.splice(pos, 1);
-    idx += pos * sFactorial(7 - i);
-  }
-  return idx;
-}
-function oriToIndex(ori) { let idx = 0; for (const v of ori) idx = idx*3 + v; return idx; }
-
-function buildPermPDB() {
-  const dist = new Int8Array(S_FACT8).fill(-1);
-  const solved = [0,1,2,3,4,5,6,7];
-  dist[permToIndex(solved)] = 0;
-  let frontier = [solved], d = 0;
-  while (frontier.length) {
-    const next = [];
-    for (const perm of frontier) for (const mv of S_ALL_MOVES) {
-      const pi = S_MOVE_TABLES[mv].pi;
-      const np = new Array(8);
-      for (let p = 0; p < 8; p++) np[pi[p]] = perm[p];
-      const key = permToIndex(np);
-      if (dist[key] === -1) { dist[key] = d + 1; next.push(np); }
-    }
-    frontier = next; d++;
-  }
-  return dist;
-}
-function buildOriPDB() {
-  const size = Math.pow(3, 8);
-  const dist = new Int8Array(size).fill(-1);
-  const solved = [0,0,0,0,0,0,0,0];
-  dist[oriToIndex(solved)] = 0;
-  let frontier = [solved], d = 0;
-  while (frontier.length) {
-    const next = [];
-    for (const ori of frontier) for (const mv of S_ALL_MOVES) {
-      const { pi, oriT } = S_MOVE_TABLES[mv];
-      const no = new Array(8);
-      for (let p = 0; p < 8; p++) no[pi[p]] = pi[p] === p ? ori[p] : oriT[ori[p]];
-      const key = oriToIndex(no);
-      if (dist[key] === -1) { dist[key] = d + 1; next.push(no); }
-    }
-    frontier = next; d++;
-  }
-  return dist;
-}
-let S_PERM_PDB = null, S_ORI_PDB = null;
-function ensurePDBs() {
-  if (!S_PERM_PDB) S_PERM_PDB = buildPermPDB();
-  if (!S_ORI_PDB) S_ORI_PDB = buildOriPDB();
-}
-function heuristic2x2(red) {
-  return Math.max(S_PERM_PDB[permToIndex(red.perm)], S_ORI_PDB[oriToIndex(red.ori)]);
-}
-
-function sleep0() { return new Promise((r) => setTimeout(r, 0)); }
-
-/* IDA* con orden de movimientos guiado por heurística. Cede el hilo cada cierto
-   número de nodos para no congelar la animación mientras "piensa". */
-async function solve2x2(fullState, { maxDepth = 16, timeBudgetMs = 9000 } = {}) {
-  ensurePDBs();
-  await sleep0();
-  let red = reducedFromAbstract(fullState);
-  const t0 = Date.now();
-  let timedOut = false;
-  let nodeCount = 0;
-
-  async function dfs(g, bound, lastFace, path) {
-    nodeCount++;
-    if (nodeCount % 4000 === 0) {
-      await sleep0();
-      if (Date.now() - t0 > timeBudgetMs) { timedOut = true; return false; }
-    }
-    const h = heuristic2x2(red);
-    if (h === 0) return true;
-    if (g + h > bound) return false;
-
-    const candidates = [];
-    for (const mv of S_ALL_MOVES) {
-      if (mv[0] === lastFace) continue;
-      const prev = red;
-      red = applyReduced(red, mv);
-      candidates.push({ mv, hh: heuristic2x2(red) });
-      red = prev;
-    }
-    candidates.sort((a, b) => a.hh - b.hh);
-
-    for (const { mv } of candidates) {
-      const prev = red;
-      red = applyReduced(red, mv);
-      path.push(mv);
-      if (await dfs(g + 1, bound, mv[0], path)) return true;
-      path.pop();
-      red = prev;
-      if (timedOut) return false;
-    }
-    return false;
-  }
-
-  for (let bound = heuristic2x2(red); bound <= maxDepth; bound++) {
-    const path = [];
-    if (await dfs(0, bound, null, path)) return path;
-    if (timedOut) return null;
-  }
-  return null;
-}
-
 /* =========================================================================
    SOLVER 3x3 — método real, no fuerza bruta.
    Igual que un cubero: reconoce en qué caso está el cubo y elige qué fórmula
@@ -817,8 +656,64 @@ const PHASE_INFO = {
   ollEdges: { name: "OLL · Cruz amarilla", tip: "Orientamos las aristas de arriba con F R U R' U' F' hasta formar la cruz amarilla." },
   ollCorners: { name: "OLL · Orientar esquinas", tip: "Con Sune y Antisune giramos las esquinas hasta que toda la cara de arriba sea amarilla." },
   pll: { name: "PLL · Permutar última capa", tip: "Las piezas ya están orientadas: ahora solo hay que colocarlas en su sitio." },
-  sol2x2: { name: "Solución completa", tip: "La ruta más corta que encontré para tu 2×2. Cada paso es un giro; observa cómo se ordena el cubo." },
+  primera: { name: "Primera cara", tip: "Colocamos las cuatro esquinas del color de abajo juntas: elige una y busca las que combinan con ella." },
+  pbl: { name: "PBL · Permutar la última capa", tip: "Las esquinas ya están orientadas: ahora solo falta colocarlas en su sitio." },
 };
+
+/* --- 2x2: en este cubo todas las piezas son esquinas, así que el método es más
+   corto: primera cara, orientar la de arriba (OLL) y permutarla (PBL). Mismos
+   algoritmos que ya enseña la Parte 1. --- */
+function solve2x2Method(state) {
+  const bottom = state.pieces.filter((p) => p.home.y === 0);
+  const top = state.pieces.filter((p) => p.home.y === 1);
+  const phases = [];
+  const countSolved = (list) => list.reduce((a, p) => a + (isPieceSolvedAbstract(p) ? 1 : 0), 0);
+  const push = (key, seq) => { if (seq && seq.length) phases.push({ key, moves: simplifySeq(seq) }); };
+
+  // 1) primera cara: insertar las 4 esquinas de abajo, una a una
+  {
+    const algs = [];
+    for (let r = 0; r < 4; r++) {
+      algs.push(rotateFormula(["R", "U", "R'"], r));
+      algs.push(rotateFormula(["F'", "U'", "F"], r));
+      algs.push(rotateFormula(["R", "U'", "R'"], r));
+      algs.push(rotateFormula(["R", "U2", "R'", "U'", "R", "U", "R'"], r));
+    }
+    const cands = buildCandidates(algs);
+    let guard = 0;
+    const acc = [];
+    while (countSolved(bottom) < 4 && guard++ < 8) {
+      const before = countSolved(bottom);
+      const seq = searchAlgs(state, cands, () => countSolved(bottom) > before, 3);
+      if (!seq) return null;
+      acc.push(...seq);
+    }
+    if (countSolved(bottom) < 4) return null;
+    push("primera", acc);
+  }
+  // 2) OLL: orientar las 4 esquinas de arriba
+  {
+    const goal = () => top.every(orientedUp);
+    if (!goal()) {
+      const seq = searchAlgs(state, buildCandidates([SUNE_A, ANTISUNE_A]), goal, 4);
+      if (!seq) return null;
+      push("ollCorners", seq);
+    }
+  }
+  // 3) PBL: permutar la última capa
+  {
+    const PBL_DIAG = ["R2", "U", "R2", "U2", "R2", "U", "R2"];
+    const PBL_ADJ = ["R'", "F", "R'", "B2", "R", "F'", "R'", "B2", "R2"];
+    const goal = () => state.pieces.every(isPieceSolvedAbstract);
+    if (!goal()) {
+      const seq = searchAlgs(state, buildCandidates([PBL_DIAG, PBL_ADJ]), goal, 3);
+      if (!seq) return null;
+      push("pbl", seq);
+    }
+  }
+  if (!state.pieces.every(isPieceSolvedAbstract)) return null;
+  return phases;
+}
 
 function solve3x3Method(state) {
   const N3 = 3;
@@ -996,13 +891,8 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
     try {
       await new Promise((r) => setTimeout(r, 30)); // deja pintar el estado "Resolviendo…"
       const state = engineRef.current.getAbstractState();
-      if (n === 2) {
-        const moves = await solve2x2(state, { maxDepth: 18, timeBudgetMs: 12000 });
-        if (moves) lesson = buildLesson([{ key: "sol2x2", moves: simplifySeq(moves) }]);
-      } else {
-        const phases = solve3x3Method(state);
-        if (phases) lesson = buildLesson(phases);
-      }
+      const phases = n === 2 ? solve2x2Method(state) : solve3x3Method(state);
+      if (phases) lesson = buildLesson(phases);
     } finally {
       setBusy(false);
     }
