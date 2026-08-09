@@ -172,7 +172,105 @@ const ALGORITHMS = {
   ],
 };
 
-/* Genera una mezcla aleatoria de N movimientos, evitando repetir eje consecutivo */
+/* =========================================================================
+   MÉTODO ALTERNATIVO 2×2 — el que trae el manual impreso del cubo (Juguettos /
+   Tetoca). Solo dos herramientas: una para armar/permutar capas y dos giros
+   (Sune / Antisune, con ajustes U) para la cara de arriba. Es puramente un
+   set de datos para practicar en el panel existente — no toca el motor, el
+   solver ni el método guiado de arriba.
+   ========================================================================= */
+const MANUAL_TOOL = ["R", "B'", "R", "F2", "R'", "B", "R", "F2", "R2"]; // "Algoritmo 1" del manual
+const MANUAL_ANTISUNE = ["R", "U2", "R'", "U'", "R", "U'", "R'"]; // "Algoritmo 2"
+const MANUAL_SUNE = ["R", "U", "R'", "U", "R", "U2", "R'"]; // "Algoritmo 3"
+
+const MANUAL_METHOD_2 = [
+  {
+    id: "manual-cara-blanca",
+    name: "Paso 1 · Cara blanca",
+    tag: "Manual del cubo",
+    formula: null,
+    description: "Junta las 4 piezas blancas a mano, igual que en la primera cara del método guiado.",
+    steps: [
+      { move: null, text: "Elige el color de abajo y localiza sus cuatro esquinas por el cubo." },
+      { move: null, text: "Fija una esquina como referencia y no la vuelvas a mover." },
+      { move: null, text: "Acerca cada esquina restante emparejando los colores laterales." },
+    ],
+  },
+  {
+    id: "manual-primera-capa",
+    name: "Paso 2 · Primera capa",
+    tag: "Manual del cubo",
+    formula: MANUAL_TOOL,
+    description: "La única herramienta del manual. Se repite tantas veces como haga falta (normalmente 1 o 2) hasta que la primera capa quede resuelta.",
+    steps: null,
+  },
+  {
+    id: "manual-amarilla-1",
+    name: "Cara amarilla · Solución 1",
+    tag: "Manual del cubo · Paso 3",
+    formula: MANUAL_ANTISUNE,
+    description: "Situación 1 del manual: Algoritmo 2 (Antisune) suelto.",
+    steps: null,
+  },
+  {
+    id: "manual-amarilla-2",
+    name: "Cara amarilla · Solución 2",
+    tag: "Manual del cubo · Paso 3",
+    formula: MANUAL_SUNE,
+    description: "Situación 2 del manual: Algoritmo 3 (Sune) suelto.",
+    steps: null,
+  },
+  {
+    id: "manual-amarilla-3",
+    name: "Cara amarilla · Solución 3",
+    tag: "Manual del cubo · Paso 3",
+    formula: [...MANUAL_ANTISUNE, ...MANUAL_ANTISUNE],
+    description: "Situación 3: Algoritmo 2 + Algoritmo 2.",
+    steps: null,
+  },
+  {
+    id: "manual-amarilla-4",
+    name: "Cara amarilla · Solución 4",
+    tag: "Manual del cubo · Paso 3",
+    formula: [...MANUAL_ANTISUNE, "U'", ...MANUAL_ANTISUNE],
+    description: "Situación 4: Algoritmo 2 + U' + Algoritmo 2.",
+    steps: null,
+  },
+  {
+    id: "manual-amarilla-5",
+    name: "Cara amarilla · Solución 5",
+    tag: "Manual del cubo · Paso 3",
+    formula: [...MANUAL_ANTISUNE, "U2", ...MANUAL_SUNE],
+    description: "Situación 5: Algoritmo 2 + U2 + Algoritmo 3.",
+    steps: null,
+  },
+  {
+    id: "manual-amarilla-6",
+    name: "Cara amarilla · Solución 6",
+    tag: "Manual del cubo · Paso 3",
+    formula: [...MANUAL_ANTISUNE, "U", ...MANUAL_SUNE],
+    description: "Situación 6: Algoritmo 2 + U + Algoritmo 3.",
+    steps: null,
+  },
+  {
+    id: "manual-amarilla-7",
+    name: "Cara amarilla · Solución 7",
+    tag: "Manual del cubo · Paso 3",
+    formula: [...MANUAL_ANTISUNE, "U'", ...MANUAL_SUNE],
+    description: "Situación 7: Algoritmo 2 + U' + Algoritmo 3.",
+    steps: null,
+  },
+  {
+    id: "manual-segunda-capa",
+    name: "Paso 4 · Permutar última capa",
+    tag: "Manual del cubo",
+    formula: MANUAL_TOOL,
+    description: "La misma herramienta del Paso 2, ahora usada para colocar las esquinas ya orientadas en su sitio y dejar el cubo resuelto.",
+    steps: null,
+  },
+];
+
+
 function generateScramble(length) {
   const faces = ["R", "L", "U", "D", "F", "B"];
   const axisOf = { R: "x", L: "x", U: "y", D: "y", F: "z", B: "z" };
@@ -942,10 +1040,16 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
 
 function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, onExitLesson }) {
   const inLesson = !!lesson;
-  const list = ALGORITHMS[n];
+  const [useManual, setUseManual] = useState(false);
+  const showManualToggle = n === 2 && !inLesson;
+  const list = n === 2 && useManual ? MANUAL_METHOD_2 : ALGORITHMS[n];
   const [algIdx, setAlgIdx] = useState(0);
   const [stepIdx, setStepIdx] = useState(-1);
   const [isPlaying, setIsPlaying] = useState(false);
+
+  // si cambiamos de cubo o de método, el índice de algoritmo anterior puede no existir ya
+  useEffect(() => { setAlgIdx(0); }, [n, useManual]);
+  useEffect(() => { if (n !== 2 && useManual) setUseManual(false); }, [n, useManual]);
 
   const alg = list[algIdx];
   const steps = inLesson ? lesson.steps : materializeSteps(alg);
@@ -1054,6 +1158,23 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
 
   return (
     <div className="algo-card">
+      {showManualToggle && (
+        <div className="method-switch">
+          <button
+            className={`method-switch-btn ${!useManual ? "method-switch-btn--active" : ""}`}
+            onClick={() => { if (!busyRef.current) setUseManual(false); }}
+          >
+            Método guiado
+          </button>
+          <button
+            className={`method-switch-btn ${useManual ? "method-switch-btn--active" : ""}`}
+            onClick={() => { if (!busyRef.current) setUseManual(true); }}
+          >
+            Método del manual del cubo
+          </button>
+        </div>
+      )}
+
       {inLesson ? (
         <div className="algo-tabs">
           <button className="algo-tab algo-tab--active">Resolución guiada</button>
@@ -1445,6 +1566,21 @@ img, svg { max-width: 100%; }
   flex-direction: column;
   min-height: 480px;
 }
+.method-switch { display: flex; gap: 6px; padding: 10px 10px 0; }
+.method-switch-btn {
+  flex: 1;
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid #23252e;
+  background: #15161c;
+  color: #8a8fa0;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+}
+.method-switch-btn--active { background: #1c2440; color: #9fb8ff; border-color: #2a3660; }
+
 .algo-tabs {
   display: flex;
   gap: 4px;
