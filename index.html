@@ -200,8 +200,9 @@ const MANUAL_METHOD_2 = [
     id: "manual-primera-capa",
     name: "Paso 2 · Primera capa",
     tag: "Manual del cubo",
-    formula: MANUAL_TOOL,
-    description: "La única herramienta del manual. Se repite tantas veces como haga falta (normalmente 1 o 2) hasta que la primera capa quede resuelta.",
+    formula: null,
+    dynamic: "paso2",
+    description: "La única herramienta del manual, aplicada tantas veces como haga falta (normalmente 1 o 2) hasta completar la capa. Cada vez que entras aquí se genera una mezcla nueva para practicar de verdad.",
     steps: null,
   },
   {
@@ -614,6 +615,16 @@ function isPieceSolvedAbstract(piece) { return sPosEq(piece.cur, piece.home) && 
 const S_ALL_MOVES = [];
 for (const letter of ["R","L","U","D","F","B"]) for (const suf of ["", "'", "2"]) S_ALL_MOVES.push(letter + suf);
 
+// cubo abstracto "de bolsillo", sin motor 3D detrás — para calcular escenarios
+// (mezcla + solución) antes de animar nada en pantalla.
+function makeAbstractCube(n) {
+  const pieces = [];
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) for (let k = 0; k < n; k++) {
+    pieces.push({ home: { x: i, y: j, z: k }, cur: { x: i, y: j, z: k }, ori: S_IDENTITY.slice() });
+  }
+  return { n, pieces };
+}
+
 /* =========================================================================
    SOLVER 3x3 — método real, no fuerza bruta.
    Igual que un cubero: reconoce en qué caso está el cubo y elige qué fórmula
@@ -761,6 +772,37 @@ const PHASE_INFO = {
 /* --- 2x2: en este cubo todas las piezas son esquinas, así que el método es más
    corto: primera cara, orientar la de arriba (OLL) y permutarla (PBL). Mismos
    algoritmos que ya enseña la Parte 1. --- */
+/* Escenario dinámico para "Paso 2 · Primera capa" del método del manual.
+   El Algoritmo 1 (solo R/F/B, sin U ni D) cicla de forma natural las esquinas
+   de ARRIBA cuando se aplica desde un cubo resuelto — así que, para que la
+   demo sea fiel, trabajamos con la cara ya montada hacia arriba (como se
+   sostendría el cubo de verdad al terminar el Paso 1 a mano). Devuelve:
+   - setupMoves: mezcla + "hacer la cara a mano" (se aplican rápido, invisibles)
+   - taught: los pasos reales del Algoritmo 1 que el usuario practica */
+function buildManualPaso2Scenario() {
+  const abs = makeAbstractCube(2);
+  const scramble = generateScramble(12);
+  scramble.forEach((mv) => applyAbstractMove(abs, mv));
+  const top = abs.pieces.filter((p) => p.home.y === 1);
+
+  let orientMoves = [];
+  if (!top.every(orientedUp)) {
+    const h = () => top.reduce((a, p) => a + (orientedUp(p) ? 0 : 1), 0);
+    orientMoves = searchMoves(abs, h, 8, 3000) || [];
+  }
+
+  const cands = buildCandidates([MANUAL_TOOL]);
+  const taught = [];
+  let guard = 0;
+  while (!top.every(isPieceSolvedAbstract) && guard++ < 4) {
+    const seq = searchAlgs(abs, cands, () => top.every(isPieceSolvedAbstract), 3);
+    if (!seq) return null;
+    taught.push(...seq);
+  }
+  if (!top.every(isPieceSolvedAbstract)) return null;
+  return { setupMoves: [...scramble, ...orientMoves], taught: simplifySeq(taught) };
+}
+
 function solve2x2Method(state) {
   const bottom = state.pieces.filter((p) => p.home.y === 0);
   const top = state.pieces.filter((p) => p.home.y === 1);
@@ -1052,7 +1094,8 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
   useEffect(() => { if (n !== 2 && useManual) setUseManual(false); }, [n, useManual]);
 
   const alg = list[algIdx];
-  const steps = inLesson ? lesson.steps : materializeSteps(alg);
+  const [dynamicSteps, setDynamicSteps] = useState(null);
+  const steps = inLesson ? lesson.steps : alg.dynamic ? (dynamicSteps || []) : materializeSteps(alg);
 
   const setupIdRef = useRef(0);
 
@@ -1060,9 +1103,24 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
     if (inLesson) return;
     const myId = ++setupIdRef.current;
     setBusy(true);
+    setDynamicSteps(null);
     try {
       engineRef.current?.reset(n);
       setStepIdx(-1);
+
+      if (alg.dynamic === "paso2") {
+        const scenario = buildManualPaso2Scenario();
+        if (!scenario) return;
+        for (const mv of scenario.setupMoves) {
+          if (setupIdRef.current !== myId) return;
+          await engineRef.current?.applyMove(mv, 70); // preparación invisible: mezcla + "cara a mano"
+        }
+        if (setupIdRef.current === myId) {
+          setDynamicSteps(scenario.taught.map((mv) => ({ move: mv, text: describeMove(mv) })));
+        }
+        return;
+      }
+
       if (alg.formula && alg.formula.length) {
         const setup = computeSetup(alg.formula);
         for (const mv of setup) {
@@ -1153,7 +1211,7 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
   const currentMove = stepIdx >= 0 ? steps[stepIdx].move : null;
   const isReady = !inLesson && steps.length > 0 && stepIdx === -1;
   const isSolved = steps.length > 0 && stepIdx === steps.length - 1;
-  const hasFormula = inLesson || !!alg.formula;
+  const hasFormula = inLesson || !!alg.formula || !!alg.dynamic;
   const currentPhase = inLesson && stepIdx >= 0 ? steps[stepIdx] : null;
 
   return (
@@ -1217,6 +1275,13 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
                 El cubo ya está preparado en el caso que resuelve este algoritmo. Sigue los pasos y comprueba cómo, al llegar al último, queda resuelto.
               </p>
             )}
+            {alg.dynamic && (
+              <p className="algo-note">
+                {dynamicSteps
+                  ? "Generé una mezcla nueva y ya te monté la cara de arriba a mano, como harías tú. Ahora sigue los pasos: son las aplicaciones reales del Algoritmo 1 que hacen falta para esta mezcla en concreto."
+                  : "Generando una mezcla nueva y montando la cara a mano…"}
+              </p>
+            )}
             {alg.formula && (
               <div className="formula-row">
                 {alg.formula.map((mv, i) => (
@@ -1262,7 +1327,7 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
           Paso {Math.max(stepIdx + 1, 0)}/{steps.length}
         </div>
         <button className="transport-reset" onClick={() => { setIsPlaying(false); if (inLesson) jumpTo(-1); else setupCase(); }}>
-          <RotateCcw size={14} /> Reiniciar
+          <RotateCcw size={14} /> {alg.dynamic ? "Mezcla nueva" : "Reiniciar"}
         </button>
       </div>
 
