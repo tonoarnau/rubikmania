@@ -373,6 +373,8 @@ class RubikEngine {
       (-frustum * aspect) / 2, (frustum * aspect) / 2, frustum / 2, -frustum / 2, 0.1, 100
     );
     this.spherical = { theta: Math.PI / 4, phi: Math.acos(1 / Math.sqrt(3)), radius: 6.2 };
+    this._basePhi = this.spherical.phi;
+    this.flipped = false;
     this._syncCamera();
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -411,6 +413,14 @@ class RubikEngine {
       radius * Math.sin(phi) * Math.cos(theta)
     );
     this.camera.lookAt(0, 0, 0);
+  }
+
+  // Vista "desde abajo": pura cámara, no cambia qué piezas mueve ningún algoritmo,
+  // solo cómo lo miras — útil para comparar con el cubo físico sostenido al revés.
+  setFlipped(flipped) {
+    this.flipped = flipped;
+    this.spherical.phi = flipped ? Math.PI - this._basePhi : this._basePhi;
+    this._syncCamera();
   }
 
   _onResize() {
@@ -840,7 +850,7 @@ const PHASE_INFO = {
    (permutar) siguen teniendo sentido después, igual que en el manual impreso.
    - setupMoves: mezcla + "hacer la cara blanca a mano" (se aplican rápido, invisibles)
    - taught: los pasos reales de la herramienta que el usuario practica */
-async function buildManualPaso2Scenario() {
+async function buildManualPaso2ScenarioOnce() {
   const abs = makeAbstractCube(2);
   const scramble = generateScramble(12);
   scramble.forEach((mv) => applyAbstractMove(abs, mv));
@@ -862,6 +872,17 @@ async function buildManualPaso2Scenario() {
   }
   if (!bottom.every(isPieceSolvedAbstract)) return null;
   return { setupMoves: [...scramble, ...orientMoves], taught: simplifySeq(taught) };
+}
+
+// La mezcla puede caer, por pura casualidad, en un caso ya resuelto (0 pasos que
+// practicar) — reintentamos unas pocas veces para asegurar que siempre haya algo
+// real que enseñar.
+async function buildManualPaso2Scenario() {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const scenario = await buildManualPaso2ScenarioOnce();
+    if (scenario && scenario.taught.length > 0) return scenario;
+  }
+  return null;
 }
 
 async function solve2x2Method(state) {
@@ -1049,15 +1070,24 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
   const mountRef = useRef(null);
   const [scrambleSeq, setScrambleSeq] = useState(null);
   const [solverStatus, setSolverStatus] = useState(null); // null | 'thinking' | 'failed'
+  const [flipped, setFlippedState] = useState(false);
 
   useEffect(() => {
     if (!mountRef.current) return;
     engineRef.current = new RubikEngine(mountRef.current, n);
     setScrambleSeq(null);
     setSolverStatus(null);
+    setFlippedState(false);
     return () => { engineRef.current?.dispose(); engineRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [n]);
+
+  const toggleFlip = () => {
+    if (!engineRef.current) return;
+    const next = !flipped;
+    engineRef.current.setFlipped(next);
+    setFlippedState(next);
+  };
 
   const scramble = async () => {
     if (busyRef.current || !engineRef.current) return;
@@ -1070,6 +1100,8 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
       for (const mv of seq) {
         await engineRef.current.applyMove(mv, 150);
       }
+    } catch (err) {
+      console.error("RubikMania: error mezclando", err);
     } finally {
       setBusy(false);
     }
@@ -1094,6 +1126,8 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
       const state = engineRef.current.getAbstractState();
       const phases = n === 2 ? await solve2x2Method(state) : await solve3x3Method(state);
       if (phases) lesson = buildLesson(phases);
+    } catch (err) {
+      console.error("RubikMania: error resolviendo", err);
     } finally {
       setBusy(false);
     }
@@ -1109,7 +1143,12 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
   return (
     <div className="stage-card">
       <div className="stage-canvas" ref={mountRef} />
-      <div className="stage-hint">Arrastra para rotar la vista</div>
+      <div className="stage-hint-row">
+        <span className="stage-hint">Arrastra para rotar la vista</span>
+        <button className="flip-btn" onClick={toggleFlip} title="Ver el cubo desde abajo">
+          ⇅ {flipped ? "Vista normal" : "Voltear vista"}
+        </button>
+      </div>
 
       <div className="scramble-bar">
         <button className="scramble-btn" onClick={scramble} disabled={busy}>
@@ -1197,6 +1236,8 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
           await engineRef.current?.applyMove(mv, 130);
         }
       }
+    } catch (err) {
+      console.error("RubikMania: error preparando el caso", err);
     } finally {
       // solo el intento más reciente puede soltar el bloqueo: si nos superó otro
       // setupCase, es SU responsabilidad liberarlo al terminar, no la nuestra.
@@ -1222,6 +1263,8 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
       const step = steps[stepIdx + 1];
       if (step.move) await engineRef.current?.applyMove(step.move);
       setStepIdx((s) => s + 1);
+    } catch (err) {
+      console.error("RubikMania: error avanzando paso", err);
     } finally {
       setBusy(false);
     }
@@ -1234,6 +1277,8 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
       const step = steps[stepIdx];
       if (step.move) await engineRef.current?.applyMove(RubikEngine.invert(step.move));
       setStepIdx((s) => s - 1);
+    } catch (err) {
+      console.error("RubikMania: error retrocediendo paso", err);
     } finally {
       setBusy(false);
     }
@@ -1256,6 +1301,8 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
         cur -= 1;
         setStepIdx(cur);
       }
+    } catch (err) {
+      console.error("RubikMania: error saltando de paso", err);
     } finally {
       setBusy(false);
     }
@@ -1481,6 +1528,18 @@ function RubikMania() {
   // mezclar o reiniciar invalida la lección actual: ya no describe el cubo que hay en pantalla
   const notifyExternalChange = useCallback(() => { setLesson(null); setResetSignal((s) => s + 1); }, []);
 
+  // Red de seguridad: si algo deja el bloqueo atascado (un error inesperado, una
+  // promesa que nunca resuelve), no debería ser posible inutilizar la app entera
+  // sin recargar la página. Si sigue "ocupado" pasados 15s, se libera solo.
+  useEffect(() => {
+    if (!busy) return;
+    const watchdog = setTimeout(() => {
+      console.warn("RubikMania: el bloqueo llevaba >15s activo, se libera automáticamente.");
+      setBusy(false);
+    }, 15000);
+    return () => clearTimeout(watchdog);
+  }, [busy, setBusy]);
+
   useEffect(() => { setLesson(null); }, [n]);
 
   return (
@@ -1683,6 +1742,19 @@ img, svg { max-width: 100%; }
 .stage-canvas { width: 100%; aspect-ratio: 1 / 1; border-radius: 12px; overflow: hidden; touch-action: none; cursor: grab; }
 .stage-canvas:active { cursor: grabbing; }
 .stage-hint { text-align: center; font-size: 11px; color: #62656f; padding: 8px 0 4px; letter-spacing: .02em; }
+.stage-hint-row { display: flex; align-items: center; justify-content: center; gap: 10px; padding: 8px 8px 4px; flex-wrap: wrap; }
+.stage-hint-row .stage-hint { padding: 0; }
+.flip-btn {
+  padding: 4px 9px;
+  border-radius: 7px;
+  border: 1px solid #23252e;
+  background: #15161c;
+  color: #8a8fa0;
+  font-size: 10.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.flip-btn:hover { color: #e9eaee; border-color: #33353f; }
 
 .scramble-bar { display: flex; gap: 8px; padding: 6px 8px 4px; }
 .scramble-btn {
