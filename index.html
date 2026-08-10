@@ -179,9 +179,26 @@ const ALGORITHMS = {
    set de datos para practicar en el panel existente — no toca el motor, el
    solver ni el método guiado de arriba.
    ========================================================================= */
-const MANUAL_TOOL = ["R", "B'", "R", "F2", "R'", "B", "R", "F2", "R2"]; // "Algoritmo 1" del manual
+const MANUAL_TOOL = ["R", "B'", "R", "F2", "R'", "B", "R", "F2", "R2"]; // "Algoritmo 1" del manual, tal cual se imprime
+// El manual sostiene el cubo con la cara ya lista hacia ARRIBA mientras hace el Paso 2
+// (por eso Algoritmo 1 solo usa R/F/B, nunca U/D: cicla naturalmente las esquinas de arriba).
+// En nuestra app el blanco siempre está fijo ABAJO, así que para el Paso 2 usamos la misma
+// maniobra "volteada" 180° (F<->B, R y L iguales) — el mismo truco, adaptado a nuestra vista.
+const MANUAL_TOOL_BOTTOM = ["R", "F'", "R", "B2", "R'", "F", "R", "B2", "R2"];
 const MANUAL_ANTISUNE = ["R", "U2", "R'", "U'", "R", "U'", "R'"]; // "Algoritmo 2"
 const MANUAL_SUNE = ["R", "U", "R'", "U", "R", "U2", "R'"]; // "Algoritmo 3"
+
+// Mapa de referencia para el "reconocedor de caso": las mismas 7 soluciones del
+// manual, en el formato que necesita classifyYellowCase.
+const YELLOW_SOLUTIONS = [
+  { n: 1, formula: MANUAL_ANTISUNE },
+  { n: 2, formula: MANUAL_SUNE },
+  { n: 3, formula: [...MANUAL_ANTISUNE, ...MANUAL_ANTISUNE] },
+  { n: 4, formula: [...MANUAL_ANTISUNE, "U'", ...MANUAL_ANTISUNE] },
+  { n: 5, formula: [...MANUAL_ANTISUNE, "U2", ...MANUAL_SUNE] },
+  { n: 6, formula: [...MANUAL_ANTISUNE, "U", ...MANUAL_SUNE] },
+  { n: 7, formula: [...MANUAL_ANTISUNE, "U'", ...MANUAL_SUNE] },
+];
 
 const MANUAL_METHOD_2 = [
   {
@@ -202,7 +219,7 @@ const MANUAL_METHOD_2 = [
     tag: "Manual del cubo",
     formula: null,
     dynamic: "paso2",
-    description: "La única herramienta del manual, aplicada tantas veces como haga falta (normalmente 1 o 2) hasta completar la capa. Cada vez que entras aquí se genera una mezcla nueva para practicar de verdad.",
+    description: "Termina la capa blanca. El manual imprime esta herramienta como R B' R F2 R' B R F2 R2 sosteniendo el cubo con la cara ya lista hacia arriba; aquí mantenemos el blanco fijo abajo, así que verás la versión volteada de la misma maniobra. Cada vez que entras se genera una mezcla nueva para practicar de verdad.",
     steps: null,
   },
   {
@@ -625,6 +642,28 @@ function makeAbstractCube(n) {
   return { n, pieces };
 }
 
+/* Reconocedor de caso para "Cara amarilla": dado el estado ACTUAL del cubo,
+   dice cuál de las 7 soluciones del manual lo resuelve (probando cada una con
+   sus 4 ajustes de U posibles). Requiere que la primera capa (abajo) ya esté
+   resuelta — si no, no hay "caso de arriba" que reconocer todavía. */
+function classifyYellowCase(state) {
+  const bottom = state.pieces.filter((p) => p.home.y === 0);
+  if (!bottom.every(isPieceSolvedAbstract)) return { status: "primera-capa-incompleta" };
+
+  const vUp = { x: 0, y: 1, z: 0 };
+  for (const { n, formula } of YELLOW_SOLUTIONS) {
+    for (const auf of [[], ["U"], ["U'"], ["U2"]]) {
+      const test = { n: state.n, pieces: state.pieces.map((p) => ({ home: p.home, cur: { ...p.cur }, ori: p.ori.slice() })) };
+      [...auf, ...formula].forEach((mv) => applyAbstractMove(test, mv));
+      const top = test.pieces.filter((p) => p.home.y === state.n - 1);
+      if (top.every((p) => sMatVec(p.ori, vUp).y === 1)) {
+        return { status: "ok", solution: n, auf: auf[0] || null };
+      }
+    }
+  }
+  return { status: "no-encontrado" };
+}
+
 /* =========================================================================
    SOLVER 3x3 — método real, no fuerza bruta.
    Igual que un cubero: reconoce en qué caso está el cubo y elige qué fórmula
@@ -661,35 +700,52 @@ function undoSeqAbs(state, seq) { for (let i = seq.length - 1; i >= 0; i--) appl
    Nota importante: el objetivo siempre se comprueba sobre el cubo real, así que
    añadir un algoritmo al repertorio nunca puede producir una solución incorrecta,
    solo una más corta. */
-function searchAlgs(state, candidates, goalFn, maxDepth) {
+function sleep0() { return new Promise((r) => setTimeout(r, 0)); }
+
+async function searchAlgs(state, candidates, goalFn, maxDepth) {
   const path = [];
-  function dfs(depth) {
+  let nodes = 0;
+  async function dfs(depth) {
     if (goalFn()) return true;
     if (depth === 0) return false;
     for (const seq of candidates) {
+      nodes++;
+      if (nodes % 300 === 0) await sleep0(); // deja respirar a la UI en búsquedas largas
       applySeqAbs(state, seq);
       path.push(seq);
-      if (dfs(depth - 1)) return true;
+      if (await dfs(depth - 1)) return true;
       path.pop();
       undoSeqAbs(state, seq);
     }
     return false;
   }
-  for (let d = 0; d <= maxDepth; d++) if (dfs(d)) return path.flat();
+  for (let d = 0; d <= maxDepth; d++) if (await dfs(d)) return path.flat();
   return null;
 }
 function buildCandidates(algs) {
   const out = [];
   for (const setup of U_SETUPS) for (const alg of algs) out.push([...setup, ...alg]);
   return out;
+
+}
+// igual que buildCandidates, pero permite elegir con qué cara se hacen los ajustes
+// (U para la capa de arriba, D para la de abajo) en vez de asumir siempre U.
+function buildCandidatesOn(face, algs) {
+  const setups = [[], [face], [face + "'"], [face + "2"]];
+  const out = [];
+  for (const setup of setups) for (const alg of algs) out.push([...setup, ...alg]);
+  return out;
 }
 
 /* búsqueda de movimientos sueltos, solo para la cruz */
-function searchMoves(state, heuristic, maxDepth, timeBudgetMs) {
+async function searchMoves(state, heuristic, maxDepth, timeBudgetMs) {
   const t0 = Date.now();
   let timedOut = false;
+  let nodes = 0;
   const path = [];
-  function dfs(g, bound, lastFace) {
+  async function dfs(g, bound, lastFace) {
+    nodes++;
+    if (nodes % 300 === 0) await sleep0();
     if (Date.now() - t0 > timeBudgetMs) { timedOut = true; return false; }
     const h = heuristic();
     if (h === 0) return true;
@@ -705,7 +761,7 @@ function searchMoves(state, heuristic, maxDepth, timeBudgetMs) {
     for (const { mv } of cands) {
       applyAbstractMove(state, mv);
       path.push(mv);
-      if (dfs(g + 1, bound, mv[0])) return true;
+      if (await dfs(g + 1, bound, mv[0])) return true;
       path.pop();
       applyAbstractMove(state, invertMove(mv));
       if (timedOut) return false;
@@ -713,7 +769,7 @@ function searchMoves(state, heuristic, maxDepth, timeBudgetMs) {
     return false;
   }
   for (let bound = heuristic(); bound <= maxDepth; bound++) {
-    if (dfs(0, bound, null)) return path.slice();
+    if (await dfs(0, bound, null)) return path.slice();
     if (timedOut) return null;
   }
   return null;
@@ -779,31 +835,36 @@ const PHASE_INFO = {
    sostendría el cubo de verdad al terminar el Paso 1 a mano). Devuelve:
    - setupMoves: mezcla + "hacer la cara a mano" (se aplican rápido, invisibles)
    - taught: los pasos reales del Algoritmo 1 que el usuario practica */
-function buildManualPaso2Scenario() {
+/* Escenario dinámico para "Paso 2 · Primera capa" del método del manual.
+   Completa la CAPA BLANCA (abajo) — así Paso 3 (cara amarilla) y Paso 4
+   (permutar) siguen teniendo sentido después, igual que en el manual impreso.
+   - setupMoves: mezcla + "hacer la cara blanca a mano" (se aplican rápido, invisibles)
+   - taught: los pasos reales de la herramienta que el usuario practica */
+async function buildManualPaso2Scenario() {
   const abs = makeAbstractCube(2);
   const scramble = generateScramble(12);
   scramble.forEach((mv) => applyAbstractMove(abs, mv));
-  const top = abs.pieces.filter((p) => p.home.y === 1);
+  const bottom = abs.pieces.filter((p) => p.home.y === 0);
 
   let orientMoves = [];
-  if (!top.every(orientedUp)) {
-    const h = () => top.reduce((a, p) => a + (orientedUp(p) ? 0 : 1), 0);
-    orientMoves = searchMoves(abs, h, 8, 3000) || [];
+  if (!bottom.every(orientedUp)) {
+    const h = () => bottom.reduce((a, p) => a + (orientedUp(p) ? 0 : 1), 0);
+    orientMoves = await searchMoves(abs, h, 8, 3000) || [];
   }
 
-  const cands = buildCandidates([MANUAL_TOOL]);
+  const cands = buildCandidatesOn("D", [MANUAL_TOOL_BOTTOM]);
   const taught = [];
   let guard = 0;
-  while (!top.every(isPieceSolvedAbstract) && guard++ < 4) {
-    const seq = searchAlgs(abs, cands, () => top.every(isPieceSolvedAbstract), 3);
+  while (!bottom.every(isPieceSolvedAbstract) && guard++ < 4) {
+    const seq = await searchAlgs(abs, cands, () => bottom.every(isPieceSolvedAbstract), 3);
     if (!seq) return null;
     taught.push(...seq);
   }
-  if (!top.every(isPieceSolvedAbstract)) return null;
+  if (!bottom.every(isPieceSolvedAbstract)) return null;
   return { setupMoves: [...scramble, ...orientMoves], taught: simplifySeq(taught) };
 }
 
-function solve2x2Method(state) {
+async function solve2x2Method(state) {
   const bottom = state.pieces.filter((p) => p.home.y === 0);
   const top = state.pieces.filter((p) => p.home.y === 1);
   const phases = [];
@@ -824,7 +885,7 @@ function solve2x2Method(state) {
     const acc = [];
     while (countSolved(bottom) < 4 && guard++ < 8) {
       const before = countSolved(bottom);
-      const seq = searchAlgs(state, cands, () => countSolved(bottom) > before, 3);
+      const seq = await searchAlgs(state, cands, () => countSolved(bottom) > before, 3);
       if (!seq) return null;
       acc.push(...seq);
     }
@@ -835,7 +896,7 @@ function solve2x2Method(state) {
   {
     const goal = () => top.every(orientedUp);
     if (!goal()) {
-      const seq = searchAlgs(state, buildCandidates([SUNE_A, ANTISUNE_A]), goal, 4);
+      const seq = await searchAlgs(state, buildCandidates([SUNE_A, ANTISUNE_A]), goal, 4);
       if (!seq) return null;
       push("ollCorners", seq);
     }
@@ -846,7 +907,7 @@ function solve2x2Method(state) {
     const PBL_ADJ = ["R'", "F", "R'", "B2", "R", "F'", "R'", "B2", "R2"];
     const goal = () => state.pieces.every(isPieceSolvedAbstract);
     if (!goal()) {
-      const seq = searchAlgs(state, buildCandidates([PBL_DIAG, PBL_ADJ]), goal, 3);
+      const seq = await searchAlgs(state, buildCandidates([PBL_DIAG, PBL_ADJ]), goal, 3);
       if (!seq) return null;
       push("pbl", seq);
     }
@@ -855,7 +916,7 @@ function solve2x2Method(state) {
   return phases;
 }
 
-function solve3x3Method(state) {
+async function solve3x3Method(state) {
   const N3 = 3;
   const phases = [];
   const isEdge = (p) => colorCountOf(p.home, N3) === 2;
@@ -881,7 +942,7 @@ function solve3x3Method(state) {
   {
     const h = () => bottomEdges.reduce((a, p) => a + (solvedP(p) ? 0 : 1), 0);
     if (h() > 0) {
-      const seq = searchMoves(state, h, 10, 6000);
+      const seq = await searchMoves(state, h, 10, 6000);
       if (!seq) return null;
       push("cruz", seq);
     }
@@ -900,7 +961,7 @@ function solve3x3Method(state) {
     const acc = [];
     while (countSolved(bottomCorners) < 4 && guard++ < 8) {
       const before = countSolved(bottomCorners);
-      const seq = searchAlgs(state, cands, () => allSolvedL(bottomEdges) && countSolved(bottomCorners) > before, 3);
+      const seq = await searchAlgs(state, cands, () => allSolvedL(bottomEdges) && countSolved(bottomCorners) > before, 3);
       if (!seq) return null;
       acc.push(...seq);
     }
@@ -917,7 +978,7 @@ function solve3x3Method(state) {
     const acc = [];
     while (countSolved(midEdges) < 4 && guard++ < 8) {
       const before = countSolved(midEdges);
-      const seq = searchAlgs(state, cands, () => allSolvedL(firstLayer) && countSolved(midEdges) > before, 2);
+      const seq = await searchAlgs(state, cands, () => allSolvedL(firstLayer) && countSolved(midEdges) > before, 2);
       if (!seq) return null;
       acc.push(...seq);
     }
@@ -928,13 +989,13 @@ function solve3x3Method(state) {
   {
     const goalE = () => topEdges.every(orientedUp);
     if (!goalE()) {
-      const seq = searchAlgs(state, buildCandidates([OLL_EDGES_A]), goalE, 3);
+      const seq = await searchAlgs(state, buildCandidates([OLL_EDGES_A]), goalE, 3);
       if (!seq) return null;
       push("ollEdges", seq);
     }
     const goalC = () => topCorners.every(orientedUp) && topEdges.every(orientedUp);
     if (!goalC()) {
-      const seq = searchAlgs(state, buildCandidates([SUNE_A, ANTISUNE_A]), goalC, 4);
+      const seq = await searchAlgs(state, buildCandidates([SUNE_A, ANTISUNE_A]), goalC, 4);
       if (!seq) return null;
       push("ollCorners", seq);
     }
@@ -944,7 +1005,7 @@ function solve3x3Method(state) {
     const goal = () => state.pieces.every(solvedP);
     if (!goal()) {
       const algs = [T_PERM, UA_PERM, UB_PERM, Y_PERM, JB_PERM, AA_PERM, AB_PERM];
-      const seq = searchAlgs(state, buildCandidates(algs), goal, 3);
+      const seq = await searchAlgs(state, buildCandidates(algs), goal, 3);
       if (!seq) return null;
       push("pll", seq);
     }
@@ -1031,7 +1092,7 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
     try {
       await new Promise((r) => setTimeout(r, 30)); // deja pintar el estado "Resolviendo…"
       const state = engineRef.current.getAbstractState();
-      const phases = n === 2 ? solve2x2Method(state) : solve3x3Method(state);
+      const phases = n === 2 ? await solve2x2Method(state) : await solve3x3Method(state);
       if (phases) lesson = buildLesson(phases);
     } finally {
       setBusy(false);
@@ -1095,7 +1156,14 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
 
   const alg = list[algIdx];
   const [dynamicSteps, setDynamicSteps] = useState(null);
+  const [caseHint, setCaseHint] = useState(null);
   const steps = inLesson ? lesson.steps : alg.dynamic ? (dynamicSteps || []) : materializeSteps(alg);
+
+  const recognizeCase = () => {
+    if (busyRef.current || !engineRef.current) return;
+    const state = engineRef.current.getAbstractState();
+    setCaseHint(classifyYellowCase(state));
+  };
 
   const setupIdRef = useRef(0);
 
@@ -1104,12 +1172,13 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
     const myId = ++setupIdRef.current;
     setBusy(true);
     setDynamicSteps(null);
+    setCaseHint(null);
     try {
       engineRef.current?.reset(n);
       setStepIdx(-1);
 
       if (alg.dynamic === "paso2") {
-        const scenario = buildManualPaso2Scenario();
+        const scenario = await buildManualPaso2Scenario();
         if (!scenario) return;
         for (const mv of scenario.setupMoves) {
           if (setupIdRef.current !== myId) return;
@@ -1230,6 +1299,37 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
           >
             Método del manual del cubo
           </button>
+        </div>
+      )}
+
+      {showManualToggle && useManual && (
+        <div className="case-detector">
+          <button className="case-detector-btn" onClick={recognizeCase} disabled={busyRef.current}>
+            🔍 ¿Qué solución uso para mi cara amarilla?
+          </button>
+          {caseHint && caseHint.status === "primera-capa-incompleta" && (
+            <p className="case-detector-result case-detector-result--warn">
+              Todavía no está resuelta la capa blanca — termina el Paso 2 primero.
+            </p>
+          )}
+          {caseHint && caseHint.status === "no-encontrado" && (
+            <p className="case-detector-result case-detector-result--warn">
+              No reconozco este patrón — revisa que la primera capa esté bien resuelta.
+            </p>
+          )}
+          {caseHint && caseHint.status === "ok" && (
+            <p className="case-detector-result">
+              {caseHint.auf ? `Gira ${caseHint.auf} y luego usa` : "Coincide directamente con"}{" "}
+              la <strong>Solución {caseHint.solution}</strong>.
+              {" "}
+              <button
+                className="case-detector-jump"
+                onClick={() => { if (!busyRef.current) setAlgIdx(1 + caseHint.solution); }}
+              >
+                Ir a esa práctica →
+              </button>
+            </p>
+          )}
         </div>
       )}
 
@@ -1645,6 +1745,36 @@ img, svg { max-width: 100%; }
   text-align: center;
 }
 .method-switch-btn--active { background: #1c2440; color: #9fb8ff; border-color: #2a3660; }
+
+.case-detector { padding: 8px 10px 0; }
+.case-detector-btn {
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px dashed #3a3550;
+  background: #1a1730;
+  color: #c9a8ff;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.case-detector-btn:disabled { opacity: .5; cursor: not-allowed; }
+.case-detector-result {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #14151d;
+  border: 1px solid #22242e;
+  font-size: 12.5px;
+  color: #d5d8e0;
+  line-height: 1.5;
+}
+.case-detector-result--warn { color: #ffcf8a; }
+.case-detector-jump {
+  background: none; border: none; color: #4fd1c5;
+  font-size: 12.5px; font-weight: 600; cursor: pointer;
+  padding: 0; text-decoration: underline;
+}
 
 .algo-tabs {
   display: flex;
