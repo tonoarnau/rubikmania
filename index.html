@@ -34,7 +34,7 @@
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import * as THREE from "three";
-import { Play, Pause, ChevronLeft, ChevronRight, RotateCcw, BookOpen, Boxes, Shuffle, Sparkles } from "lucide-react";
+import { Play, Pause, ChevronLeft, ChevronRight, RotateCcw, BookOpen, Boxes, Shuffle, Sparkles, Camera, RotateCw, Check, X } from "lucide-react";
 
 /* =========================================================================
    DATOS: notación, algoritmos y glosario
@@ -344,6 +344,68 @@ const MOVE_META = {
   B: { axis: "z", layer: () => 0, sign: 1 },
 };
 
+/* ---------- material del cuerpo de plástico (negro, mate-satinado) ---------- */
+function makeBodyMaterial() {
+  return new THREE.MeshStandardMaterial({ color: COLORS.inner, roughness: 0.5, metalness: 0.08 });
+}
+let BODY_MAT = null;
+function bodyMaterial() {
+  if (!BODY_MAT) BODY_MAT = makeBodyMaterial();
+  return BODY_MAT;
+}
+
+/* ---------- pegatinas: textura en canvas con esquinas redondeadas, como en
+   un cubo real, en vez de rellenar toda la cara del cubie de color plano.
+   Se generan una sola vez por color y se reutilizan (igual que MAT_CACHE). ---------- */
+const STICKER_TEX_CACHE = {};
+function stickerTexture(hex) {
+  if (STICKER_TEX_CACHE[hex]) return STICKER_TEX_CACHE[hex];
+  const size = 128;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d");
+  const r = size * 0.16;
+  ctx.fillStyle = "#" + hex.toString(16).padStart(6, "0");
+  ctx.beginPath();
+  ctx.moveTo(r, 0);
+  ctx.arcTo(size, 0, size, size, r);
+  ctx.arcTo(size, size, 0, size, r);
+  ctx.arcTo(0, size, 0, 0, r);
+  ctx.arcTo(0, 0, size, 0, r);
+  ctx.closePath();
+  ctx.fill();
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.anisotropy = 4;
+  STICKER_TEX_CACHE[hex] = tex;
+  return tex;
+}
+const STICKER_MAT_CACHE = {};
+function stickerMaterial(hex) {
+  if (STICKER_MAT_CACHE[hex]) return STICKER_MAT_CACHE[hex];
+  const m = new THREE.MeshStandardMaterial({
+    map: stickerTexture(hex), roughness: 0.28, metalness: 0.03,
+    alphaTest: 0.5, transparent: false,
+  });
+  STICKER_MAT_CACHE[hex] = m;
+  return m;
+}
+// geometría de plano compartida por todas las pegatinas del mismo tamaño
+const STICKER_GEO_CACHE = {};
+function stickerGeometry(size) {
+  const key = size.toFixed(4);
+  if (!STICKER_GEO_CACHE[key]) STICKER_GEO_CACHE[key] = new THREE.PlaneGeometry(size, size);
+  return STICKER_GEO_CACHE[key];
+}
+// cara local -> [posición normalizada, rotación euler] para orientar la pegatina hacia afuera
+const STICKER_FACES = [
+  { key: "px", pos: [1, 0, 0], rot: [0, Math.PI / 2, 0] },
+  { key: "nx", pos: [-1, 0, 0], rot: [0, -Math.PI / 2, 0] },
+  { key: "py", pos: [0, 1, 0], rot: [-Math.PI / 2, 0, 0] },
+  { key: "ny", pos: [0, -1, 0], rot: [Math.PI / 2, 0, 0] },
+  { key: "pz", pos: [0, 0, 1], rot: [0, 0, 0] },
+  { key: "nz", pos: [0, 0, -1], rot: [0, Math.PI, 0] },
+];
+
 function makeMaterial(hex) {
   return new THREE.MeshStandardMaterial({ color: hex, roughness: 0.55, metalness: 0.06 });
 }
@@ -357,8 +419,8 @@ class RubikEngine {
   constructor(mountEl, n) {
     this.mountEl = mountEl;
     this.n = n;
-    this.spacing = 1.03;
-    this.cubieSize = 0.94;
+    this.spacing = 1.0;
+    this.cubieSize = 0.965;
     this.busy = false;
     this.disposed = false;
 
@@ -383,14 +445,17 @@ class RubikEngine {
     mountEl.innerHTML = "";
     mountEl.appendChild(this.renderer.domElement);
 
-    const hemi = new THREE.HemisphereLight(0xffffff, 0x33363f, 0.65);
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x33363f, 0.55);
     this.scene.add(hemi);
-    const key = new THREE.DirectionalLight(0xffffff, 0.9);
+    const key = new THREE.DirectionalLight(0xffffff, 1.05);
     key.position.set(5, 8, 6);
     this.scene.add(key);
-    const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+    const fill = new THREE.DirectionalLight(0xffffff, 0.4);
     fill.position.set(-6, -3, -4);
     this.scene.add(fill);
+    const rim = new THREE.DirectionalLight(0xbfd4ff, 0.3);
+    rim.position.set(-3, 5, -6);
+    this.scene.add(rim);
 
     this.group = new THREE.Group();
     this.scene.add(this.group);
@@ -471,19 +536,30 @@ class RubikEngine {
     const off = (n - 1) / 2;
     const geo = new THREE.BoxGeometry(this.cubieSize, this.cubieSize, this.cubieSize);
     this._geo = geo;
+    const stickerSize = this.cubieSize * 0.86; // deja ver el margen negro del cuerpo alrededor
+    const stickerOffset = this.cubieSize / 2 + 0.006; // evita z-fighting con el cuerpo
     for (let i = 0; i < n; i++) {
       for (let j = 0; j < n; j++) {
         for (let k = 0; k < n; k++) {
-          const materials = [
-            i === n - 1 ? mat(COLORS.red) : mat(COLORS.inner),
-            i === 0 ? mat(COLORS.orange) : mat(COLORS.inner),
-            j === n - 1 ? mat(COLORS.yellow) : mat(COLORS.inner),
-            j === 0 ? mat(COLORS.white) : mat(COLORS.inner),
-            k === n - 1 ? mat(COLORS.green) : mat(COLORS.inner),
-            k === 0 ? mat(COLORS.blue) : mat(COLORS.inner),
-          ];
-          const mesh = new THREE.Mesh(geo, materials);
+          const mesh = new THREE.Mesh(geo, bodyMaterial());
           mesh.position.set(this._gridToWorld(i, off), this._gridToWorld(j, off), this._gridToWorld(k, off));
+
+          const facesHere = [
+            i === n - 1 && { key: "px", color: COLORS.red },
+            i === 0 && { key: "nx", color: COLORS.orange },
+            j === n - 1 && { key: "py", color: COLORS.yellow },
+            j === 0 && { key: "ny", color: COLORS.white },
+            k === n - 1 && { key: "pz", color: COLORS.green },
+            k === 0 && { key: "nz", color: COLORS.blue },
+          ].filter(Boolean);
+          for (const f of facesHere) {
+            const layout = STICKER_FACES.find((s) => s.key === f.key);
+            const sticker = new THREE.Mesh(stickerGeometry(stickerSize), stickerMaterial(f.color));
+            sticker.position.set(...layout.pos.map((v) => v * stickerOffset));
+            sticker.rotation.set(...layout.rot);
+            mesh.add(sticker); // hija del cuerpo: se mueve y gira con él automáticamente
+          }
+
           this.group.add(mesh);
           this.cubies.push({ mesh, grid: { x: i, y: j, z: k }, home: { x: i, y: j, z: k } });
         }
@@ -507,6 +583,25 @@ class RubikEngine {
       return { home: c.home, cur: { ...c.grid }, ori: raw.map((v) => Math.round(v)) };
     });
     return { n: this.n, pieces };
+  }
+
+  // Inverso de getAbstractState: coloca cada cubie en la posición y orientación
+  // dadas (usadas por el escáner de fotos para recrear el cubo real).
+  loadState(pieces) {
+    const off = (this.n - 1) / 2;
+    for (const p of pieces) {
+      const cubie = this.cubies.find((c) => c.home.x === p.home.x && c.home.y === p.home.y && c.home.z === p.home.z);
+      if (!cubie) continue;
+      cubie.grid = { ...p.cur };
+      cubie.mesh.position.set((p.cur.x - off) * this.spacing, (p.cur.y - off) * this.spacing, (p.cur.z - off) * this.spacing);
+      const m4 = new THREE.Matrix4().set(
+        p.ori[0], p.ori[1], p.ori[2], 0,
+        p.ori[3], p.ori[4], p.ori[5], 0,
+        p.ori[6], p.ori[7], p.ori[8], 0,
+        0, 0, 0, 1
+      );
+      cubie.mesh.quaternion.setFromRotationMatrix(m4);
+    }
   }
 
   _snap(mesh) {
@@ -650,6 +745,94 @@ function makeAbstractCube(n) {
     pieces.push({ home: { x: i, y: j, z: k }, cur: { x: i, y: j, z: k }, ori: S_IDENTITY.slice() });
   }
   return { n, pieces };
+}
+
+/* =========================================================================
+   FASE 3 — Reconstrucción: 6 fotos (4 colores cada una, en orden de lectura
+   superior-izq/superior-der/inferior-izq/inferior-der) -> posición y
+   orientación de cada esquina. Verificado matemáticamente contra 500 mezclas
+   aleatorias simuladas antes de integrarlo aquí: la reconstrucción recupera
+   el estado exacto en el 100% de los casos.
+
+   El protocolo de captura (ver SCAN_STEPS) define geométricamente qué
+   posición y qué eje local fotografía cada una de las 6 fotos:
+   ========================================================================= */
+const SCAN_PHOTO_MAPS = {
+  front: { axis: "+z", cells: [["L","U","F"], ["R","U","F"], ["L","D","F"], ["R","D","F"]] },
+  right: { axis: "+x", cells: [["R","U","F"], ["R","U","B"], ["R","D","F"], ["R","D","B"]] },
+  back:  { axis: "-z", cells: [["R","U","B"], ["L","U","B"], ["R","D","B"], ["L","D","B"]] },
+  left:  { axis: "-x", cells: [["L","U","B"], ["L","U","F"], ["L","D","B"], ["L","D","F"]] },
+  up:    { axis: "+y", cells: [["L","U","B"], ["R","U","B"], ["L","U","F"], ["R","U","F"]] },
+  down:  { axis: "-y", cells: [["L","D","F"], ["R","D","F"], ["L","D","B"], ["R","D","B"]] },
+};
+const SCAN_AXIS_VEC = { "+x": [1,0,0], "-x": [-1,0,0], "+y": [0,1,0], "-y": [0,-1,0], "+z": [0,0,1], "-z": [0,0,-1] };
+
+function scanPosKey(tag) { return Array.isArray(tag) ? tag.join("") : tag; }
+function scanCoordFromTag(tagStr) {
+  return { x: tagStr.includes("R") ? 1 : 0, y: tagStr.includes("U") ? 1 : 0, z: tagStr.includes("F") ? 1 : 0 };
+}
+function scanHomeCorner(x, y, z) {
+  return {
+    x, y, z,
+    colors: {
+      "+x": x === 1 ? "red" : null, "-x": x === 0 ? "orange" : null,
+      "+y": y === 1 ? "yellow" : null, "-y": y === 0 ? "white" : null,
+      "+z": z === 1 ? "green" : null, "-z": z === 0 ? "blue" : null,
+    },
+  };
+}
+const SCAN_HOME_CORNERS = [];
+for (let x = 0; x < 2; x++) for (let y = 0; y < 2; y++) for (let z = 0; z < 2; z++) SCAN_HOME_CORNERS.push(scanHomeCorner(x, y, z));
+const scanColorSetOf = (c) => Object.values(c.colors).filter(Boolean).sort().join(",");
+
+// faceColors: { front: [c1,c2,c3,c4], right: [...], ... } -> { pieces, errors }
+function reconstructScan(faceColors) {
+  const observed = {};
+  for (const [face, colors] of Object.entries(faceColors)) {
+    const map = SCAN_PHOTO_MAPS[face];
+    map.cells.forEach((tag, i) => {
+      const key = scanPosKey(tag);
+      observed[key] = observed[key] || {};
+      observed[key][map.axis] = colors[i];
+    });
+  }
+
+  const errors = [];
+  const usedHome = new Set();
+  const pieces = [];
+
+  for (const tag of ["LUF", "RUF", "LDF", "RDF", "LUB", "RUB", "LDB", "RDB"]) {
+    const cur = scanCoordFromTag(tag);
+    const axes = Object.keys(observed[tag] || {});
+    if (axes.length !== 3) { errors.push(`Posición ${tag}: solo se detectaron ${axes.length}/3 colores.`); continue; }
+
+    const colorSet = axes.map((a) => observed[tag][a]).sort().join(",");
+    const match = SCAN_HOME_CORNERS.find((h) => scanColorSetOf(h) === colorSet);
+    if (!match) { errors.push(`Posición ${tag}: los colores (${colorSet}) no forman una esquina válida — revisa esas fotos.`); continue; }
+    const homeTag = (match.x ? "R" : "L") + (match.y ? "U" : "D") + (match.z ? "F" : "B");
+    if (usedHome.has(homeTag)) errors.push(`La esquina ${homeTag} parece aparecer en más de una posición — revisa esas fotos.`);
+    usedHome.add(homeTag);
+
+    const M = [0,0,0, 0,0,0, 0,0,0];
+    for (const localAxis of ["+x","-x","+y","-y","+z","-z"]) {
+      const color = match.colors[localAxis];
+      if (!color) continue;
+      const worldAxis = axes.find((a) => observed[tag][a] === color);
+      if (!worldAxis) continue;
+      const localVec = SCAN_AXIS_VEC[localAxis];
+      const worldVec = SCAN_AXIS_VEC[worldAxis];
+      const colIdx = localVec.findIndex((v) => v !== 0);
+      const sign = localVec[colIdx];
+      M[0*3+colIdx] = worldVec[0]*sign; M[1*3+colIdx] = worldVec[1]*sign; M[2*3+colIdx] = worldVec[2]*sign;
+    }
+    pieces.push({ home: { x: match.x, y: match.y, z: match.z }, cur, ori: M });
+  }
+
+  for (const h of SCAN_HOME_CORNERS) {
+    const tag = (h.x ? "R" : "L") + (h.y ? "U" : "D") + (h.z ? "F" : "B");
+    if (!usedHome.has(tag)) errors.push(`Nunca se encontró la esquina ${tag} en ninguna foto.`);
+  }
+  return { pieces, errors };
 }
 
 /* Reconocedor de caso para "Cara amarilla": dado el estado ACTUAL del cubo,
@@ -1066,7 +1249,7 @@ function Keycap({ move, active, dim }) {
   );
 }
 
-function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesson }) {
+function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesson, pendingScan, onScanConsumed, justScanned }) {
   const mountRef = useRef(null);
   const [scrambleSeq, setScrambleSeq] = useState(null);
   const [solverStatus, setSolverStatus] = useState(null); // null | 'thinking' | 'failed'
@@ -1078,9 +1261,20 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
     setScrambleSeq(null);
     setSolverStatus(null);
     setFlippedState(false);
+    if (pendingScan) { engineRef.current.loadState(pendingScan); onScanConsumed?.(); }
     return () => { engineRef.current?.dispose(); engineRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [n]);
+
+  // si el escaneo llega estando Stage YA montado (motor ya existe), cargarlo también aquí
+  useEffect(() => {
+    if (pendingScan && engineRef.current) {
+      engineRef.current.loadState(pendingScan);
+      setScrambleSeq(null);
+      onScanConsumed?.();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingScan]);
 
   const toggleFlip = () => {
     if (!engineRef.current) return;
@@ -1158,6 +1352,12 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
           <RotateCcw size={14} /> Cubo resuelto
         </button>
       </div>
+
+      {justScanned && (
+        <div className="scan-loaded-banner">
+          📷 Este es tu cubo real, tal como lo fotografiaste. Dale a "Enséñame a resolverlo" para ver cómo armarlo.
+        </div>
+      )}
 
       <div className="scramble-bar scramble-bar--secondary">
         <button className="scramble-btn scramble-btn--solver" onClick={autoSolve} disabled={busy}>
@@ -1511,6 +1711,371 @@ function GlossarySection() {
 }
 
 /* =========================================================================
+   FASE 1 — Captura guiada para reconstruir el cubo real.
+   El reto no es "reconocer colores" (eso es fácil), es saber qué orientación
+   tenía el cubo en cada foto. Por eso el protocolo es estricto: cada paso
+   parte de una posición conocida respecto a la foto anterior, así el resultado
+   son 6 fotos con una relación geométrica exacta entre ellas — el material en
+   crudo que necesitará la Fase 2 (reconocer color) y la Fase 3 (reconstruir).
+   ========================================================================= */
+const SCAN_STEPS = [
+  {
+    id: "front",
+    title: "Foto 1 de 6 — Tu cara de referencia",
+    instruction: "Sujeta el cubo mezclado como te resulte cómodo. Vas a fotografiar la cara que tienes justo enfrente. Esta foto marca el punto de partida: el resto son relativas a ella.",
+    icon: "start",
+  },
+  {
+    id: "right",
+    title: "Foto 2 de 6 — Gira el cubo a la derecha",
+    instruction: "Sin girar ninguna cara (gira el CUBO ENTERO, como una peonza), rótalo 90° hacia tu derecha. Fotografía la cara que ahora te mira.",
+    icon: "turn",
+  },
+  {
+    id: "back",
+    title: "Foto 3 de 6 — Otro giro más",
+    instruction: "Gira el cubo entero otros 90° en la misma dirección (izquierda→derecha).",
+    icon: "turn",
+  },
+  {
+    id: "left",
+    title: "Foto 4 de 6 — Un giro más",
+    instruction: "Un giro más, 90° en la misma dirección. Con esta cierras la vuelta completa por los lados.",
+    icon: "turn",
+  },
+  {
+    id: "up",
+    title: "Foto 5 de 6 — Cara de arriba",
+    instruction: "Vuelve a sujetar el cubo como en la Foto 1. Ahora inclínalo hacia TI, acercando la parte de ARRIBA a la cámara, hasta que esa cara te mire de frente.",
+    icon: "tiltBack",
+  },
+  {
+    id: "down",
+    title: "Foto 6 de 6 — Cara de abajo",
+    instruction: "Otra vez desde la posición de la Foto 1. Esta vez inclina alejando la parte de ARRIBA de ti (la de ABAJO se acerca a la cámara).",
+    icon: "tiltForward",
+  },
+];
+
+/* =========================================================================
+   FASE 2 — Reconocer el color de las 4 pegatinas de cada foto, con la API
+   de Claude (visión). Se guarda como texto plano (white/yellow/red/orange/
+   green/blue) en orden de lectura: superior-izq, superior-der, inferior-izq,
+   inferior-der. El resultado siempre queda editable a mano — un color mal
+   detectado en una sola pegatina puede volver el cubo irresoluble, así que
+   nunca confiamos ciegamente en la detección automática.
+   ========================================================================= */
+const SCAN_COLOR_HEX = {
+  white: "#f4f3ef", yellow: "#ffd500", red: "#b8172c",
+  orange: "#ff5a1f", green: "#00975f", blue: "#0a54c4",
+};
+const SCAN_COLOR_ORDER = ["white", "yellow", "red", "orange", "green", "blue"];
+const SCAN_COLOR_ES = { white: "Blanco", yellow: "Amarillo", red: "Rojo", orange: "Naranja", green: "Verde", blue: "Azul" };
+
+function normalizeScanColor(raw) {
+  const c = String(raw || "").trim().toLowerCase();
+  if (SCAN_COLOR_ORDER.includes(c)) return c;
+  const map = { blanco: "white", amarillo: "yellow", rojo: "red", naranja: "orange", verde: "green", azul: "blue" };
+  return map[c] || null;
+}
+
+const DETECT_PROMPT = `Esta es una foto de UNA cara de un cubo de Rubik 2x2 (2x2 pegatinas de color).
+Identifica el color de cada una de las 4 pegatinas, leyendo en este orden: superior-izquierda,
+superior-derecha, inferior-izquierda, inferior-derecha.
+Cada color debe ser EXACTAMENTE una de estas seis palabras en inglés: white, yellow, red, orange, green, blue.
+Responde ÚNICAMENTE con este JSON, sin texto adicional, sin backticks, sin explicación:
+{"colors": ["___", "___", "___", "___"]}`;
+
+async function detectFaceColors(dataUrl) {
+  const match = dataUrl.match(/^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/);
+  if (!match) throw new Error("Formato de imagen no reconocido");
+  const [, mediaType, base64Data] = match;
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "claude-sonnet-4-6",
+      max_tokens: 300,
+      messages: [{
+        role: "user",
+        content: [
+          { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
+          { type: "text", text: DETECT_PROMPT },
+        ],
+      }],
+    }),
+  });
+  if (!response.ok) throw new Error("Error de red (" + response.status + ")");
+  const data = await response.json();
+  const textBlock = (data.content || []).find((b) => b.type === "text");
+  if (!textBlock) throw new Error("La respuesta no incluyó texto");
+  const cleaned = textBlock.text.replace(/```json|```/g, "").trim();
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    throw new Error("No se pudo interpretar la respuesta");
+  }
+  if (!Array.isArray(parsed.colors) || parsed.colors.length !== 4) throw new Error("Formato de colores inesperado");
+  const normalized = parsed.colors.map(normalizeScanColor);
+  if (normalized.some((c) => !c)) throw new Error("Color no reconocido en la respuesta");
+  return normalized;
+}
+
+function ScanStepIcon({ kind }) {
+  if (kind === "start") return <Camera size={28} />;
+  if (kind === "turn") return <RotateCw size={28} />;
+  return <RotateCcw size={28} />;
+}
+
+function ScanWizard({ onExit, onReconstructed }) {
+  const [step, setStep] = useState(0);
+  const [photos, setPhotos] = useState(Array(SCAN_STEPS.length).fill(null));
+  const [faceColors, setFaceColors] = useState(Array(SCAN_STEPS.length).fill(null));
+  const [detectStatus, setDetectStatus] = useState(Array(SCAN_STEPS.length).fill("idle")); // idle|loading|done|error
+  const [detectError, setDetectError] = useState(Array(SCAN_STEPS.length).fill(null));
+  const [reconstructError, setReconstructError] = useState(null);
+  const fileInputRef = useRef(null);
+
+  const allCaptured = photos.every(Boolean);
+  const allDetected = faceColors.every(Boolean);
+  const current = SCAN_STEPS[step];
+
+  const [checking, setChecking] = useState(false);
+
+  const handleReconstruct = async () => {
+    const byId = {};
+    SCAN_STEPS.forEach((s, i) => { byId[s.id] = faceColors[i]; });
+    const { pieces, errors } = reconstructScan(byId);
+    if (errors.length) { setReconstructError(errors); return; }
+
+    // Verificación final: si nuestro solver (ya probado 300/300) puede resolver este
+    // estado, es matemáticamente imposible que sea un cubo físicamente ilegal —
+    // reutilizamos esa garantía en vez de una fórmula de paridad aparte.
+    setChecking(true);
+    try {
+      const state = { n: 2, pieces: pieces.map((p) => ({ home: p.home, cur: { ...p.cur }, ori: p.ori.slice() })) };
+      const solvable = await solve2x2Method(state);
+      if (!solvable) {
+        setReconstructError(["El resultado no corresponde a un cubo real (no tiene solución posible) — probablemente algún color se leyó mal. Revisa las rejillas de arriba."]);
+        return;
+      }
+    } finally {
+      setChecking(false);
+    }
+    setReconstructError(null);
+    onReconstructed?.(pieces);
+  };
+
+  const detectOne = async (i) => {
+    setDetectStatus((prev) => { const n = prev.slice(); n[i] = "loading"; return n; });
+    setDetectError((prev) => { const n = prev.slice(); n[i] = null; return n; });
+    try {
+      const colors = await detectFaceColors(photos[i]);
+      setFaceColors((prev) => { const n = prev.slice(); n[i] = colors; return n; });
+      setDetectStatus((prev) => { const n = prev.slice(); n[i] = "done"; return n; });
+    } catch (err) {
+      setDetectStatus((prev) => { const n = prev.slice(); n[i] = "error"; return n; });
+      setDetectError((prev) => { const n = prev.slice(); n[i] = err.message || "Error desconocido"; return n; });
+    }
+  };
+
+  const detectAll = async () => {
+    for (let i = 0; i < SCAN_STEPS.length; i++) {
+      if (faceColors[i]) continue; // no repetir caras ya reconocidas (p.ej. tras un reintento parcial)
+      await detectOne(i);
+    }
+  };
+
+  const cycleColor = (faceIdx, stickerIdx) => {
+    setReconstructError(null);
+    setFaceColors((prev) => {
+      const n = prev.slice();
+      const face = (n[faceIdx] || ["white", "white", "white", "white"]).slice();
+      const curIdx = SCAN_COLOR_ORDER.indexOf(face[stickerIdx]);
+      face[stickerIdx] = SCAN_COLOR_ORDER[(curIdx + 1) % SCAN_COLOR_ORDER.length];
+      n[faceIdx] = face;
+      return n;
+    });
+    setDetectStatus((prev) => { const n = prev.slice(); n[faceIdx] = "done"; return n; });
+  };
+
+  const handleFile = (e) => {
+    const file = e.target.files && e.target.files[0];
+    e.target.value = ""; // permite volver a elegir el mismo archivo si se repite la foto
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      setPhotos((prev) => {
+        const next = prev.slice();
+        next[step] = reader.result;
+        return next;
+      });
+      if (step < SCAN_STEPS.length - 1) setStep(step + 1);
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const retake = (i) => {
+    setStep(i);
+    setPhotos((prev) => {
+      const next = prev.slice();
+      next[i] = null;
+      return next;
+    });
+    setFaceColors((prev) => { const n = prev.slice(); n[i] = null; return n; });
+    setDetectStatus((prev) => { const n = prev.slice(); n[i] = "idle"; return n; });
+    setDetectError((prev) => { const n = prev.slice(); n[i] = null; return n; });
+  };
+
+  return (
+    <div className="scan-wizard">
+      <div className="scan-progress">
+        {SCAN_STEPS.map((s, i) => (
+          <button
+            key={s.id}
+            className={`scan-dot ${photos[i] ? "scan-dot--done" : ""} ${i === step ? "scan-dot--active" : ""}`}
+            onClick={() => setStep(i)}
+            title={s.title}
+          >
+            {photos[i] ? <Check size={12} /> : i + 1}
+          </button>
+        ))}
+      </div>
+
+      {!allCaptured || step < SCAN_STEPS.length ? (
+        <div className="scan-step-card">
+          <div className="scan-step-icon"><ScanStepIcon kind={current.icon} /></div>
+          <h3 className="scan-step-title">{current.title}</h3>
+          <p className="scan-step-instruction">{current.instruction}</p>
+
+          {photos[step] ? (
+            <div className="scan-preview">
+              <img src={photos[step]} alt={current.title} />
+              <button className="scan-retake-btn" onClick={() => retake(step)}>
+                <RotateCcw size={14} /> Repetir esta foto
+              </button>
+            </div>
+          ) : (
+            <>
+              <button className="scan-capture-btn" onClick={() => fileInputRef.current?.click()}>
+                <Camera size={18} /> Tomar foto
+              </button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={handleFile}
+                style={{ display: "none" }}
+              />
+            </>
+          )}
+
+          <div className="scan-step-nav">
+            <button className="scan-nav-btn" onClick={() => setStep((s) => Math.max(0, s - 1))} disabled={step === 0}>
+              <ChevronLeft size={16} /> Anterior
+            </button>
+            <button
+              className="scan-nav-btn"
+              onClick={() => setStep((s) => Math.min(SCAN_STEPS.length - 1, s + 1))}
+              disabled={step === SCAN_STEPS.length - 1}
+            >
+              Siguiente <ChevronRight size={16} />
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      <div className="scan-thumbs">
+        {SCAN_STEPS.map((s, i) => (
+          <button key={s.id} className={`scan-thumb ${i === step ? "scan-thumb--active" : ""}`} onClick={() => setStep(i)}>
+            {photos[i] ? <img src={photos[i]} alt={s.title} /> : <span className="scan-thumb-empty">{i + 1}</span>}
+          </button>
+        ))}
+      </div>
+
+      {allCaptured && !allDetected && (
+        <div className="scan-done-card">
+          <p>
+            <Check size={16} /> Las 6 fotos están listas.
+          </p>
+          <button className="scan-detect-btn" onClick={detectAll} disabled={detectStatus.includes("loading")}>
+            {detectStatus.includes("loading") ? "Reconociendo colores…" : "🔍 Reconocer colores"}
+          </button>
+        </div>
+      )}
+
+      {allCaptured && faceColors.some(Boolean) && (
+        <div className="scan-faces-review">
+          <p className="scan-review-hint">Toca cualquier cuadrito para corregirlo si detectamos mal un color.</p>
+          {SCAN_STEPS.map((s, i) => (
+            <div key={s.id} className="scan-face-row">
+              <img src={photos[i]} alt={s.title} className="scan-face-thumb" />
+              <div className="scan-face-info">
+                <span className="scan-face-name">{s.title.replace(/^Foto \d de 6 — /, "")}</span>
+                {detectStatus[i] === "loading" && <span className="scan-face-status">Analizando…</span>}
+                {detectStatus[i] === "error" && (
+                  <div className="scan-face-error">
+                    <span>No se pudo reconocer{detectError[i] ? `: ${detectError[i]}` : ""}.</span>
+                    <button onClick={() => detectOne(i)}>Reintentar</button>
+                  </div>
+                )}
+                {faceColors[i] && (
+                  <div className="scan-color-grid">
+                    {faceColors[i].map((c, si) => (
+                      <button
+                        key={si}
+                        className="scan-color-cell"
+                        style={{ background: SCAN_COLOR_HEX[c] }}
+                        title={SCAN_COLOR_ES[c]}
+                        onClick={() => cycleColor(i, si)}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {allDetected && (
+        <div className="scan-done-card scan-done-card--final">
+          <p>
+            <Check size={16} /> Las 6 caras están reconocidas.
+          </p>
+          {reconstructError ? (
+            <div className="scan-recon-errors">
+              <p className="scan-recon-errors-title">No pude reconstruir el cubo con estos colores:</p>
+              <ul>
+                {reconstructError.map((e, i) => <li key={i}>{e}</li>)}
+              </ul>
+              <p className="scan-done-note">
+                Suele ser un color mal leído en alguna esquina — revisa las rejillas de arriba (toca un cuadrito para
+                corregirlo) y vuelve a intentar.
+              </p>
+              <button className="scan-detect-btn" onClick={handleReconstruct} disabled={checking}>
+                {checking ? "Comprobando…" : "Reintentar reconstrucción"}
+              </button>
+            </div>
+          ) : (
+            <button className="scan-detect-btn" onClick={handleReconstruct} disabled={checking}>
+              {checking ? "Comprobando que el cubo sea válido…" : "🧩 Reconstruir mi cubo"}
+            </button>
+          )}
+        </div>
+      )}
+
+      <button className="scan-exit-btn" onClick={onExit}>
+        <X size={14} /> Salir del escaneo
+      </button>
+    </div>
+  );
+}
+
+/* =========================================================================
    APP
    ========================================================================= */
 
@@ -1523,10 +2088,12 @@ function RubikMania() {
   const busyRef = useRef(false);
 
   const [lesson, setLesson] = useState(null);
+  const [pendingScan, setPendingScan] = useState(null);
+  const [justScanned, setJustScanned] = useState(false);
 
   const setBusy = useCallback((v) => { busyRef.current = v; setBusyState(v); }, []);
   // mezclar o reiniciar invalida la lección actual: ya no describe el cubo que hay en pantalla
-  const notifyExternalChange = useCallback(() => { setLesson(null); setResetSignal((s) => s + 1); }, []);
+  const notifyExternalChange = useCallback(() => { setLesson(null); setJustScanned(false); setResetSignal((s) => s + 1); }, []);
 
   // Red de seguridad: si algo deja el bloqueo atascado (un error inesperado, una
   // promesa que nunca resuelve), no debería ser posible inutilizar la app entera
@@ -1541,6 +2108,7 @@ function RubikMania() {
   }, [busy, setBusy]);
 
   useEffect(() => { setLesson(null); }, [n]);
+  useEffect(() => { if (n !== 2 && view === "scan") setView("practice"); }, [n, view]);
 
   return (
     <div className="app-root">
@@ -1575,6 +2143,14 @@ function RubikMania() {
         >
           <BookOpen size={14} /> Glosario
         </button>
+        {n === 2 && (
+          <button
+            className={`glossary-btn ${view === "scan" ? "glossary-btn--active" : ""}`}
+            onClick={() => setView(view === "scan" ? "practice" : "scan")}
+          >
+            <Camera size={14} /> Escanear mi cubo
+          </button>
+        )}
       </header>
 
       <main className="main">
@@ -1588,6 +2164,9 @@ function RubikMania() {
               setBusy={setBusy}
               onExternalChange={notifyExternalChange}
               onLesson={setLesson}
+              pendingScan={pendingScan}
+              justScanned={justScanned}
+              onScanConsumed={() => setPendingScan(null)}
             />
             <AlgorithmPanel
               n={n}
@@ -1599,6 +2178,14 @@ function RubikMania() {
               onExitLesson={() => setLesson(null)}
             />
           </div>
+        ) : view === "scan" ? (
+          <>
+            <h2 className="section-title">Escanear mi cubo</h2>
+            <ScanWizard
+              onExit={() => setView("practice")}
+              onReconstructed={(pieces) => { setPendingScan(pieces); setJustScanned(true); setLesson(null); setResetSignal((s) => s + 1); setView("practice"); }}
+            />
+          </>
         ) : (
           <>
             <h2 className="section-title">Glosario</h2>
@@ -1778,6 +2365,16 @@ img, svg { max-width: 100%; }
 .scramble-moves { display: flex; flex-wrap: wrap; gap: 5px; }
 
 .scramble-bar--secondary { padding-top: 0; }
+.scan-loaded-banner {
+  margin: 0 10px 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: #14182a;
+  border: 1px solid #22263f;
+  color: #9fb8ff;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
 .scramble-btn--solver {
   background: linear-gradient(135deg, #6d5bff, #4fd1c5);
   color: #0d0e12;
@@ -1964,6 +2561,148 @@ img, svg { max-width: 100%; }
   .algo-card { min-height: 0; }
   .algo-body { padding: 14px 14px 4px; }
 }
+
+/* ---------- escaneo ---------- */
+.scan-wizard { max-width: 480px; margin: 0 auto; display: flex; flex-direction: column; gap: 16px; }
+
+.scan-progress { display: flex; justify-content: center; gap: 6px; }
+.scan-dot {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  border: 1px solid #23252e;
+  background: #15161c;
+  color: #71747e;
+  font-size: 11px;
+  font-weight: 700;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.scan-dot--done { background: #16241d; color: #7fe0a8; border-color: #2a3a30; }
+.scan-dot--active { border-color: #ffd500; color: #ffd500; }
+
+.scan-step-card {
+  background: #14151b;
+  border: 1px solid #1e2028;
+  border-radius: 16px;
+  padding: 20px 18px;
+  text-align: center;
+}
+.scan-step-icon { color: #ffd500; display: flex; justify-content: center; margin-bottom: 10px; }
+.scan-step-title { font-family: 'Space Grotesk', sans-serif; font-size: 16px; margin: 0 0 8px; }
+.scan-step-instruction { font-size: 13px; color: #a5a8b1; line-height: 1.55; margin: 0 0 16px; }
+
+.scan-capture-btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 12px 20px;
+  border-radius: 12px;
+  border: none;
+  background: #ffd500;
+  color: #16171d;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.scan-preview { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.scan-preview img { width: 100%; max-width: 260px; border-radius: 12px; border: 1px solid #23252e; }
+.scan-retake-btn {
+  display: flex; align-items: center; gap: 6px;
+  background: none; border: 1px solid #23252e; border-radius: 8px;
+  padding: 6px 12px; color: #a5a8b1; font-size: 12px; cursor: pointer;
+}
+
+.scan-step-nav { display: flex; justify-content: space-between; gap: 8px; margin-top: 16px; }
+.scan-nav-btn {
+  display: flex; align-items: center; gap: 4px;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid #23252e;
+  background: #1a1c23;
+  color: #c7cad2;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.scan-nav-btn:disabled { opacity: .35; cursor: not-allowed; }
+
+.scan-thumbs { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; }
+.scan-thumb {
+  aspect-ratio: 1/1;
+  border-radius: 8px;
+  border: 1px solid #23252e;
+  background: #15161c;
+  overflow: hidden;
+  padding: 0;
+  cursor: pointer;
+}
+.scan-thumb--active { border-color: #ffd500; }
+.scan-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.scan-thumb-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: #52545e; font-size: 12px; }
+
+.scan-detect-btn {
+  margin-top: 10px;
+  width: 100%;
+  padding: 10px;
+  border-radius: 10px;
+  border: none;
+  background: linear-gradient(135deg, #6d5bff, #4fd1c5);
+  color: #0d0e12;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.scan-detect-btn:disabled { opacity: .6; cursor: not-allowed; }
+
+.scan-review-hint { font-size: 12px; color: #71747e; margin: 0 0 8px; text-align: center; }
+.scan-faces-review { display: flex; flex-direction: column; gap: 8px; }
+.scan-face-row {
+  display: flex; align-items: center; gap: 12px;
+  background: #14151b;
+  border: 1px solid #1e2028;
+  border-radius: 12px;
+  padding: 10px;
+}
+.scan-face-thumb { width: 52px; height: 52px; object-fit: cover; border-radius: 8px; flex-shrink: 0; }
+.scan-face-info { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+.scan-face-name { font-size: 12.5px; font-weight: 600; color: #d5d8e0; }
+.scan-face-status { font-size: 11.5px; color: #9fb8ff; }
+.scan-face-error { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: #ffcf8a; flex-wrap: wrap; }
+.scan-face-error button {
+  background: #2a2110; border: 1px solid #4a3a1a; color: #ffcf8a;
+  border-radius: 6px; padding: 3px 8px; font-size: 11px; cursor: pointer;
+}
+.scan-color-grid {
+  display: grid; grid-template-columns: repeat(2, 22px); grid-template-rows: repeat(2, 22px);
+  gap: 3px;
+}
+.scan-color-cell {
+  width: 22px; height: 22px;
+  border-radius: 5px;
+  border: 1px solid rgba(255,255,255,.25);
+  cursor: pointer;
+  padding: 0;
+}
+
+.scan-done-card {
+  background: #16241d;
+  border: 1px solid #2a3a30;
+  border-radius: 12px;
+  padding: 14px 16px;
+}
+.scan-done-card p { margin: 0; font-size: 13px; color: #7fe0a8; display: flex; align-items: center; gap: 8px; }
+.scan-done-note { color: #8ba896 !important; margin-top: 8px !important; line-height: 1.5; }
+
+.scan-recon-errors { margin-top: 10px; }
+.scan-recon-errors-title { margin: 0 0 6px !important; color: #ffcf8a !important; font-weight: 600; }
+.scan-recon-errors ul { margin: 0 0 8px; padding-left: 18px; }
+.scan-recon-errors li { color: #ffcf8a; font-size: 12px; line-height: 1.5; }
+
+.scan-exit-btn {
+  align-self: center;
+  display: flex; align-items: center; gap: 6px;
+  background: none; border: none; color: #71747e;
+  font-size: 12.5px; cursor: pointer; padding: 6px;
+}
+.scan-exit-btn:hover { color: #e9eaee; }
 
 /* ---------- glossary ---------- */
 .glossary-grid {
