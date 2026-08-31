@@ -1779,48 +1779,62 @@ function normalizeScanColor(raw) {
   return map[c] || null;
 }
 
-const DETECT_PROMPT = `Esta es una foto de UNA cara de un cubo de Rubik 2x2 (2x2 pegatinas de color).
-Identifica el color de cada una de las 4 pegatinas, leyendo en este orden: superior-izquierda,
-superior-derecha, inferior-izquierda, inferior-derecha.
-Cada color debe ser EXACTAMENTE una de estas seis palabras en inglés: white, yellow, red, orange, green, blue.
-Responde ÚNICAMENTE con este JSON, sin texto adicional, sin backticks, sin explicación:
-{"colors": ["___", "___", "___", "___"]}`;
-
-async function detectFaceColors(dataUrl) {
-  const match = dataUrl.match(/^data:(image\/[a-zA-Z+.-]+);base64,(.+)$/);
-  if (!match) throw new Error("Formato de imagen no reconocido");
-  const [, mediaType, base64Data] = match;
-
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "claude-sonnet-4-6",
-      max_tokens: 300,
-      messages: [{
-        role: "user",
-        content: [
-          { type: "image", source: { type: "base64", media_type: mediaType, data: base64Data } },
-          { type: "text", text: DETECT_PROMPT },
-        ],
-      }],
-    }),
-  });
-  if (!response.ok) throw new Error("Error de red (" + response.status + ")");
-  const data = await response.json();
-  const textBlock = (data.content || []).find((b) => b.type === "text");
-  if (!textBlock) throw new Error("La respuesta no incluyó texto");
-  const cleaned = textBlock.text.replace(/```json|```/g, "").trim();
-  let parsed;
-  try {
-    parsed = JSON.parse(cleaned);
-  } catch {
-    throw new Error("No se pudo interpretar la respuesta");
+// Colores de referencia (aprox. de las pegatinas oficiales) para clasificar por distancia.
+const SCAN_REF_RGB = {
+  white: [245, 245, 240], yellow: [255, 213, 0], red: [183, 18, 52],
+  orange: [255, 88, 0], green: [0, 158, 96], blue: [0, 81, 186],
+};
+function nearestScanColor(r, g, b) {
+  let best = null, bestDist = Infinity;
+  for (const [name, [rr, gg, bb]] of Object.entries(SCAN_REF_RGB)) {
+    // ponderado tipo "distancia perceptual" simple (más peso al verde, como YIQ/luma)
+    const d = 2 * (r - rr) ** 2 + 4 * (g - gg) ** 2 + 3 * (b - bb) ** 2;
+    if (d < bestDist) { bestDist = d; best = name; }
   }
-  if (!Array.isArray(parsed.colors) || parsed.colors.length !== 4) throw new Error("Formato de colores inesperado");
-  const normalized = parsed.colors.map(normalizeScanColor);
-  if (normalized.some((c) => !c)) throw new Error("Color no reconocido en la respuesta");
-  return normalized;
+  return best;
+}
+
+function loadImage(dataUrl) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error("No se pudo leer la imagen"));
+    img.src = dataUrl;
+  });
+}
+
+// Detección 100% local (sin red): recorta un cuadrado centrado de la foto —
+// asumiendo que el usuario encuadró la cara ahí, como piden las instrucciones —
+// lo divide en 2x2 y promedia el color de una zona pequeña en el centro de cada
+// cuadrante (para no pisar el borde negro del plástico entre pegatinas).
+async function detectFaceColors(dataUrl) {
+  const img = await loadImage(dataUrl);
+  const size = 240;
+  const canvas = document.createElement("canvas");
+  canvas.width = canvas.height = size;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+
+  // recorte cuadrado centrado, con un margen para excluir fondo/manos
+  const side = Math.min(img.naturalWidth, img.naturalHeight) * 0.72;
+  const sx = (img.naturalWidth - side) / 2;
+  const sy = (img.naturalHeight - side) / 2;
+  ctx.drawImage(img, sx, sy, side, side, 0, 0, size, size);
+
+  const cellCenters = [
+    [size * 0.28, size * 0.28], [size * 0.72, size * 0.28], // TL, TR
+    [size * 0.28, size * 0.72], [size * 0.72, size * 0.72], // BL, BR
+  ];
+  const sample = size * 0.14; // media zona de muestreo por celda
+
+  const colors = cellCenters.map(([cx, cy]) => {
+    const { data } = ctx.getImageData(cx - sample / 2, cy - sample / 2, sample, sample);
+    let r = 0, g = 0, b = 0, n = 0;
+    for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i + 1]; b += data[i + 2]; n++; }
+    return nearestScanColor(r / n, g / n, b / n);
+  });
+
+  if (colors.some((c) => !c)) throw new Error("No se pudo muestrear la imagen");
+  return colors;
 }
 
 function ScanStepIcon({ kind }) {
@@ -1949,6 +1963,7 @@ function ScanWizard({ onExit, onReconstructed }) {
           <div className="scan-step-icon"><ScanStepIcon kind={current.icon} /></div>
           <h3 className="scan-step-title">{current.title}</h3>
           <p className="scan-step-instruction">{current.instruction}</p>
+          <p className="scan-frame-hint">📐 Encuadra la cara bien centrada y que ocupe la mayor parte de la foto (sin dedos ni fondo alrededor).</p>
 
           {photos[step] ? (
             <div className="scan-preview">
@@ -2590,6 +2605,7 @@ img, svg { max-width: 100%; }
 .scan-step-icon { color: #ffd500; display: flex; justify-content: center; margin-bottom: 10px; }
 .scan-step-title { font-family: 'Space Grotesk', sans-serif; font-size: 16px; margin: 0 0 8px; }
 .scan-step-instruction { font-size: 13px; color: #a5a8b1; line-height: 1.55; margin: 0 0 16px; }
+.scan-frame-hint { font-size: 11.5px; color: #ffcf8a; background: #1d1710; border: 1px solid #3a2e14; border-radius: 8px; padding: 7px 10px; margin: 0 0 14px; }
 
 .scan-capture-btn {
   display: inline-flex; align-items: center; gap: 8px;
