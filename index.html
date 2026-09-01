@@ -1271,7 +1271,7 @@ function Keycap({ move, active, dim }) {
   );
 }
 
-function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesson, pendingScan, onScanConsumed, justScanned, scanAutoFixNote }) {
+function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesson, pendingScan, onScanConsumed, justScanned, scanAutoFixNote, scanCandidates, scanCandidateIdx, onConfirmScanCandidate, onTryNextScanCandidate }) {
   const mountRef = useRef(null);
   const [scrambleSeq, setScrambleSeq] = useState(null);
   const [solverStatus, setSolverStatus] = useState(null); // null | 'thinking' | 'failed'
@@ -1374,6 +1374,23 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
           <RotateCcw size={14} /> Cubo resuelto
         </button>
       </div>
+
+      {scanCandidates && (
+        <div className="scan-confirm-banner">
+          <p>
+            🤔 Encontré {scanCandidates.length} formas distintas de encajar tus fotos — mostrando la {scanCandidateIdx + 1}ª.
+            ¿Coincide este cubo con el tuyo?
+          </p>
+          <div className="scan-confirm-actions">
+            <button className="scan-confirm-yes" onClick={onConfirmScanCandidate} disabled={busy}>
+              <Check size={14} /> Sí, es este
+            </button>
+            <button className="scan-confirm-no" onClick={onTryNextScanCandidate} disabled={busy}>
+              <RotateCcw size={14} /> No, probar otra
+            </button>
+          </div>
+        </div>
+      )}
 
       {justScanned && (
         <div className="scan-loaded-banner">
@@ -1881,8 +1898,6 @@ function ScanWizard({ onExit, onReconstructed }) {
 
   const [checking, setChecking] = useState(false);
 
-  const [autoFixNote, setAutoFixNote] = useState(null);
-
   const handleReconstruct = async () => {
     const byId = {};
     SCAN_STEPS.forEach((s, i) => { byId[s.id] = faceColors[i]; });
@@ -1891,26 +1906,35 @@ function ScanWizard({ onExit, onReconstructed }) {
     setAutoFixNote(null);
     let lastErrors = null;
     try {
-      for (const transform of SCAN_GRID_TRANSFORMS) {
+      // probar primero la orientación que funcionó la última vez en esta cámara —
+      // reduce mucho las veces que hay que elegir a mano cuando hay ambigüedad
+      let preferred = null;
+      try { preferred = localStorage.getItem("rubikmania_scan_transform"); } catch {}
+      const ordered = preferred
+        ? [...SCAN_GRID_TRANSFORMS].sort((a, b) => (a.id === preferred ? -1 : b.id === preferred ? 1 : 0))
+        : SCAN_GRID_TRANSFORMS;
+
+      const candidates = [];
+      for (const transform of ordered) {
         const attempt = applyScanGridTransform(byId, transform.fn);
         const { pieces, errors } = reconstructScan(attempt);
         if (errors.length) { if (transform.id === "identidad") lastErrors = errors; continue; }
 
-        // Verificación final: si nuestro solver (ya probado) puede resolver este estado,
+        // Verificación: si nuestro solver (ya probado) puede resolver este estado,
         // es matemáticamente imposible que sea un cubo físicamente ilegal.
         const state = { n: 2, pieces: pieces.map((p) => ({ home: p.home, cur: { ...p.cur }, ori: p.ori.slice() })) };
         const solvable = await solve2x2Method(state);
         if (!solvable) { if (transform.id === "identidad") lastErrors = ["El resultado no tiene solución posible."]; continue; }
 
-        const note = transform.id !== "identidad"
-          ? `Tus fotos estaban en "${transform.id}" respecto a lo esperado (típico de algunas cámaras frontales) — lo corregí solo.`
-          : null;
-        setAutoFixNote(note);
-        setReconstructError(null);
-        onReconstructed?.(pieces, note);
+        candidates.push({ pieces, transformId: transform.id });
+      }
+
+      if (!candidates.length) {
+        setReconstructError(lastErrors || ["No encontré ninguna orientación de las fotos que forme un cubo válido."]);
         return;
       }
-      setReconstructError(lastErrors || ["No encontré ninguna orientación de las fotos que forme un cubo válido."]);
+      setReconstructError(null);
+      onReconstructed?.(candidates);
     } finally {
       setChecking(false);
     }
@@ -2140,10 +2164,34 @@ function RubikMania() {
   const [pendingScan, setPendingScan] = useState(null);
   const [justScanned, setJustScanned] = useState(false);
   const [scanAutoFixNote, setScanAutoFixNote] = useState(null);
+  const [scanCandidates, setScanCandidates] = useState(null); // [{pieces, transformId}] cuando hay ambigüedad
+  const [scanCandidateIdx, setScanCandidateIdx] = useState(0);
 
   const setBusy = useCallback((v) => { busyRef.current = v; setBusyState(v); }, []);
   // mezclar o reiniciar invalida la lección actual: ya no describe el cubo que hay en pantalla
-  const notifyExternalChange = useCallback(() => { setLesson(null); setJustScanned(false); setScanAutoFixNote(null); setResetSignal((s) => s + 1); }, []);
+  const notifyExternalChange = useCallback(() => { setLesson(null); setJustScanned(false); setScanAutoFixNote(null); setScanCandidates(null); setResetSignal((s) => s + 1); }, []);
+
+  const confirmScanCandidate = useCallback(() => {
+    setScanCandidates((cands) => {
+      if (!cands) return cands;
+      const { transformId } = cands[scanCandidateIdx];
+      try { localStorage.setItem("rubikmania_scan_transform", transformId); } catch {}
+      setScanAutoFixNote(transformId !== "identidad" ? `Corregí la orientación de tus fotos ("${transformId}") automáticamente.` : null);
+      setJustScanned(true);
+      return null;
+    });
+  }, [scanCandidateIdx]);
+
+  const tryNextScanCandidate = useCallback(() => {
+    setScanCandidates((cands) => {
+      if (!cands) return cands;
+      const nextIdx = (scanCandidateIdx + 1) % cands.length;
+      setScanCandidateIdx(nextIdx);
+      setPendingScan(cands[nextIdx].pieces);
+      setResetSignal((s) => s + 1);
+      return cands;
+    });
+  }, [scanCandidateIdx]);
 
   // Red de seguridad: si algo deja el bloqueo atascado (un error inesperado, una
   // promesa que nunca resuelve), no debería ser posible inutilizar la app entera
@@ -2217,6 +2265,10 @@ function RubikMania() {
               pendingScan={pendingScan}
               justScanned={justScanned}
               scanAutoFixNote={scanAutoFixNote}
+              scanCandidates={scanCandidates}
+              scanCandidateIdx={scanCandidateIdx}
+              onConfirmScanCandidate={confirmScanCandidate}
+              onTryNextScanCandidate={tryNextScanCandidate}
               onScanConsumed={() => setPendingScan(null)}
             />
             <AlgorithmPanel
@@ -2234,7 +2286,25 @@ function RubikMania() {
             <h2 className="section-title">Escanear mi cubo</h2>
             <ScanWizard
               onExit={() => setView("practice")}
-              onReconstructed={(pieces, note) => { setPendingScan(pieces); setJustScanned(true); setScanAutoFixNote(note); setLesson(null); setResetSignal((s) => s + 1); setView("practice"); }}
+              onReconstructed={(candidates) => {
+                setScanCandidateIdx(0);
+                if (candidates.length === 1) {
+                  const { pieces, transformId } = candidates[0];
+                  try { localStorage.setItem("rubikmania_scan_transform", transformId); } catch {}
+                  setPendingScan(pieces);
+                  setJustScanned(true);
+                  setScanAutoFixNote(transformId !== "identidad" ? `Corregí la orientación de tus fotos ("${transformId}") automáticamente.` : null);
+                  setScanCandidates(null);
+                } else {
+                  setScanCandidates(candidates);
+                  setPendingScan(candidates[0].pieces);
+                  setJustScanned(false);
+                  setScanAutoFixNote(null);
+                }
+                setLesson(null);
+                setResetSignal((s) => s + 1);
+                setView("practice");
+              }}
             />
           </>
         ) : (
@@ -2416,6 +2486,29 @@ img, svg { max-width: 100%; }
 .scramble-moves { display: flex; flex-wrap: wrap; gap: 5px; }
 
 .scramble-bar--secondary { padding-top: 0; }
+.scan-confirm-banner {
+  margin: 0 10px 8px;
+  padding: 10px;
+  border-radius: 10px;
+  background: #241a10;
+  border: 1px solid #4a3416;
+}
+.scan-confirm-banner p { margin: 0 0 8px; font-size: 12px; color: #ffcf8a; line-height: 1.4; }
+.scan-confirm-actions { display: flex; gap: 8px; }
+.scan-confirm-yes, .scan-confirm-no {
+  flex: 1;
+  display: flex; align-items: center; justify-content: center; gap: 6px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border: none;
+}
+.scan-confirm-yes { background: #1a3a2a; color: #7fe0a8; }
+.scan-confirm-no { background: #2a2020; color: #ffb3b3; }
+.scan-confirm-yes:disabled, .scan-confirm-no:disabled { opacity: .5; cursor: not-allowed; }
+
 .scan-loaded-banner {
   margin: 0 10px 8px;
   padding: 8px 10px;
