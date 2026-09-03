@@ -1903,7 +1903,6 @@ function ScanWizard({ onExit, onReconstructed }) {
     SCAN_STEPS.forEach((s, i) => { byId[s.id] = faceColors[i]; });
 
     setChecking(true);
-    setAutoFixNote(null);
     let lastErrors = null;
     try {
       // probar primero la orientación que funcionó la última vez en esta cámara —
