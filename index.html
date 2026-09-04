@@ -288,6 +288,117 @@ const MANUAL_METHOD_2 = [
   },
 ];
 
+/* =========================================================================
+   MÉTODO PLATZI (3x3) — "7 pasos para resolver y memorizar el algoritmo del
+   cubo de Rubik". Cada caso, transcrito y verificado por separado (ida y
+   vuelta en Node) antes de integrarlo. Pasos 6 y 7 son dinámicos por el
+   mismo motivo que el Paso 2 del manual de 2x2 — ver buildPlatziPaso6/7Scenario.
+   ========================================================================= */
+const PLATZI_METHOD_3 = [
+  {
+    id: "platzi-cruz",
+    name: "Paso 1 · Cruz blanca",
+    tag: "Método Platzi",
+    formula: null,
+    description: "Coloca las 4 aristas blancas formando una cruz en la cara de abajo, igual que en el método guiado.",
+    steps: [
+      { move: null, text: "Localiza las cuatro aristas con blanco entre sus dos colores." },
+      { move: null, text: "Lleva cada una junto al centro lateral que combine con su otro color." },
+      { move: null, text: "Comprueba que los cuatro brazos de la cruz coincidan con los centros vecinos." },
+    ],
+  },
+  {
+    id: "platzi-esquinas-1",
+    name: "Paso 2 · Esquinas · Caso 1",
+    tag: "Método Platzi",
+    formula: ["D'", "R'", "D", "R"],
+    description: "La esquina blanca tiene el blanco mirando hacia la cara frontal.",
+    steps: null,
+  },
+  {
+    id: "platzi-esquinas-2",
+    name: "Paso 2 · Esquinas · Caso 2",
+    tag: "Método Platzi",
+    formula: ["D", "F", "D'", "F'"],
+    description: "La esquina blanca tiene el blanco mirando hacia la cara derecha.",
+    steps: null,
+  },
+  {
+    id: "platzi-medio-1",
+    name: "Paso 3 · Capa del medio · Caso 1",
+    tag: "Método Platzi",
+    formula: ["U", "F'", "U'", "F", "U", "R", "U'", "R'"],
+    description: "La arista debe insertarse hacia la derecha de donde está arriba.",
+    steps: null,
+  },
+  {
+    id: "platzi-medio-2",
+    name: "Paso 3 · Capa del medio · Caso 2",
+    tag: "Método Platzi",
+    formula: ["U", "R", "U'", "R'", "U'", "F'", "U", "F"],
+    description: "La arista debe insertarse hacia la izquierda de donde está arriba (espejo del caso 1).",
+    steps: null,
+  },
+  {
+    id: "platzi-amarilla-1",
+    name: "Paso 4 · Cruz amarilla · Caso 1",
+    tag: "Método Platzi",
+    formula: ["R'", "F'", "U'", "F", "U", "R"],
+    description: "Dos aristas opuestas ya están bien orientadas.",
+    steps: null,
+  },
+  {
+    id: "platzi-amarilla-2",
+    name: "Paso 4 · Cruz amarilla · Caso 2",
+    tag: "Método Platzi",
+    formula: ["R'", "U'", "F'", "U", "F", "R"],
+    description: "Dos aristas adyacentes (una al lado de la otra) ya están bien orientadas.",
+    steps: null,
+  },
+  {
+    id: "platzi-amarilla-3",
+    name: "Paso 4 · Cruz amarilla · Caso 3",
+    tag: "Método Platzi",
+    formula: ["R'", "F'", "U'", "F", "U", "R", "U", "U", "R'", "U'", "F'", "U", "F", "R"],
+    description: "Ninguna arista está orientada: se aplica el Caso 1, dos giros a la cara amarilla, y el Caso 2.",
+    steps: null,
+  },
+  {
+    id: "platzi-acomodar-1",
+    name: "Paso 5 · Acomodar cruz amarilla · Caso 1",
+    tag: "Método Platzi",
+    formula: ["R'", "U'", "R", "U'", "R'", "U", "U", "R", "U'"],
+    description: "Dos aristas adyacentes ya orientadas, las otras dos no.",
+    steps: null,
+  },
+  {
+    id: "platzi-acomodar-2",
+    name: "Paso 5 · Acomodar cruz amarilla · Caso 2",
+    tag: "Método Platzi",
+    formula: ["R'", "U'", "R", "U'", "R'", "U", "U", "R"],
+    description: "Dos aristas opuestas ya orientadas, las otras dos no (lleva al Caso 1).",
+    steps: null,
+  },
+  {
+    id: "platzi-esquinas3",
+    name: "Paso 6 · Orientar las 3 últimas esquinas",
+    tag: "Método Platzi",
+    formula: null,
+    dynamic: "platzi6",
+    description: "La fórmula de la página (con L) mueve piezas de otra capa en nuestro motor de cámara fija — verificado, no es un error de transcripción. Aquí usamos un algoritmo equivalente ya probado (Sune/Antisune) que orienta las mismas esquinas. Puede descolocar alguna arista de arriba como efecto colateral normal — el Paso 7 lo deja todo resuelto.",
+    steps: null,
+  },
+  {
+    id: "platzi-permutar2",
+    name: "Paso 7 · Permutar las 2 últimas esquinas",
+    tag: "Método Platzi",
+    formula: null,
+    dynamic: "platzi7",
+    description: "Mismo caso que el Paso 6 (la fórmula con D cruza capas en este motor): usamos un algoritmo equivalente ya probado que deja las esquinas colocadas.",
+    steps: null,
+  },
+];
+
 
 function generateScramble(length) {
   const faces = ["R", "L", "U", "D", "F", "B"];
@@ -376,6 +487,7 @@ function stickerTexture(hex) {
   ctx.fill();
   const tex = new THREE.CanvasTexture(canvas);
   tex.anisotropy = 4;
+  tex.colorSpace = THREE.SRGBColorSpace;
   STICKER_TEX_CACHE[hex] = tex;
   return tex;
 }
@@ -441,6 +553,7 @@ class RubikEngine {
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.setSize(w, h);
     mountEl.innerHTML = "";
     mountEl.appendChild(this.renderer.domElement);
@@ -1090,6 +1203,153 @@ async function buildManualPaso2Scenario() {
   return null;
 }
 
+/* =========================================================================
+   MÉTODO PLATZI (3x3) — Pasos 6 y 7 dinámicos.
+   Las fórmulas literales de la página (con L y D) mueven piezas de una capa
+   a otra al aplicarlas en nuestro motor de vista fija — verificado en Node,
+   incluso probando la misma conjugación que arregló el Paso 2 del manual de
+   2x2, y confirmado dos veces con capturas más nítidas de la página: la
+   transcripción es exacta, el problema es real. Lo más probable es que la
+   guía asuma un giro del cubo completo en la mano que el texto no explicita.
+   En vez de forzar una fórmula que no se comporta bien en este motor, estos
+   dos pasos usan Sune/Antisune y AA/AB-perm — ya probados a fondo en el
+   método guiado — que cumplen exactamente la misma función (orientar y
+   luego colocar las últimas esquinas), con letras distintas a las de Platzi.
+   ========================================================================= */
+
+// Deja el cubo en: primeras dos capas resueltas + cruz amarilla completa
+// (aristas de arriba orientadas Y colocadas) — el punto exacto donde el
+// método Platzi empieza su Paso 6. Reutiliza las mismas fases que ya
+// probamos en solve3x3Method.
+async function buildPlatziF2LEdgesScenario() {
+  const state = makeAbstractCube(3);
+  const scramble = generateScramble(20);
+  scramble.forEach((mv) => applyAbstractMove(state, mv));
+  const setupMoves = [...scramble];
+
+  const isEdge = (p) => colorCountOf(p.home, 3) === 2;
+  const isCorner = (p) => colorCountOf(p.home, 3) === 3;
+  const solvedP = (p) => (colorCountOf(p.home, 3) < 2 ? sPosEq(p.cur, p.home) : isPieceSolvedAbstract(p));
+  const countSolved = (list) => list.reduce((a, p) => a + (solvedP(p) ? 1 : 0), 0);
+  const allSolvedL = (list) => list.every(solvedP);
+
+  const bottomEdges = state.pieces.filter((p) => isEdge(p) && p.home.y === 0);
+  const bottomCorners = state.pieces.filter((p) => isCorner(p) && p.home.y === 0);
+  const midEdges = state.pieces.filter((p) => isEdge(p) && p.home.y === 1);
+  const topEdges = state.pieces.filter((p) => isEdge(p) && p.home.y === 2);
+  const topCorners = state.pieces.filter((p) => isCorner(p) && p.home.y === 2);
+
+  // cruz
+  {
+    const h = () => bottomEdges.reduce((a, p) => a + (solvedP(p) ? 0 : 1), 0);
+    if (h() > 0) {
+      const seq = await searchMoves(state, h, 10, 6000);
+      if (!seq) return null;
+      setupMoves.push(...seq);
+    }
+  }
+  // esquinas primera capa
+  {
+    const algs = [];
+    for (let r = 0; r < 4; r++) {
+      algs.push(rotateFormula(["R", "U", "R'"], r));
+      algs.push(rotateFormula(["F'", "U'", "F"], r));
+      algs.push(rotateFormula(["R", "U'", "R'"], r));
+      algs.push(rotateFormula(["R", "U2", "R'", "U'", "R", "U", "R'"], r));
+    }
+    const cands = buildCandidates(algs);
+    let guard = 0;
+    while (countSolved(bottomCorners) < 4 && guard++ < 8) {
+      const before = countSolved(bottomCorners);
+      const seq = await searchAlgs(state, cands, () => allSolvedL(bottomEdges) && countSolved(bottomCorners) > before, 3);
+      if (!seq) return null;
+      setupMoves.push(...seq);
+    }
+    if (countSolved(bottomCorners) < 4) return null;
+  }
+  // segunda capa
+  {
+    const firstLayer = [...bottomEdges, ...bottomCorners];
+    const inserts = [];
+    for (let r = 0; r < 4; r++) { inserts.push(rotateFormula(INSERT_RIGHT, r)); inserts.push(rotateFormula(INSERT_LEFT, r)); }
+    const cands = buildCandidates(inserts);
+    let guard = 0;
+    while (countSolved(midEdges) < 4 && guard++ < 8) {
+      const before = countSolved(midEdges);
+      const seq = await searchAlgs(state, cands, () => allSolvedL(firstLayer) && countSolved(midEdges) > before, 2);
+      if (!seq) return null;
+      setupMoves.push(...seq);
+    }
+    if (countSolved(midEdges) < 4) return null;
+  }
+  // orientar aristas de arriba (cruz amarilla, Paso 4 de Platzi)
+  {
+    const goalE = () => topEdges.every(orientedUp);
+    if (!goalE()) {
+      const seq = await searchAlgs(state, buildCandidates([OLL_EDGES_A]), goalE, 3);
+      if (!seq) return null;
+      setupMoves.push(...seq);
+    }
+  }
+  // permutar aristas de arriba del todo (Paso 5 de Platzi)
+  {
+    if (!topEdges.every(isPieceSolvedAbstract)) {
+      const cands = buildCandidates([UA_PERM, UB_PERM]);
+      const seq = await searchAlgs(state, cands, () => topEdges.every(isPieceSolvedAbstract), 3);
+      if (!seq) return null;
+      setupMoves.push(...seq);
+    }
+  }
+  return { state, setupMoves, topCorners, topEdges, solvedP };
+}
+
+async function buildPlatziPaso6ScenarioOnce() {
+  const base = await buildPlatziF2LEdgesScenario();
+  if (!base) return null;
+  const { state, setupMoves, topCorners } = base;
+  if (topCorners.every(orientedUp)) return null; // ya orientadas de casualidad: reintentar con otra mezcla
+  const cands = buildCandidates([SUNE_A, ANTISUNE_A]);
+  const taught = await searchAlgs(state, cands, () => topCorners.every(orientedUp), 4);
+  if (!taught) return null;
+  return { setupMoves, taught: simplifySeq(taught) };
+}
+async function buildPlatziPaso6Scenario() {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const s = await buildPlatziPaso6ScenarioOnce();
+    if (s && s.taught.length > 0) return s;
+  }
+  return null;
+}
+
+async function buildPlatziPaso7ScenarioOnce() {
+  const base = await buildPlatziF2LEdgesScenario();
+  if (!base) return null;
+  const { state, setupMoves, topCorners, topEdges, solvedP } = base;
+  // Igual que solve3x3Method: buscamos UNA combinación de Sune/Antisune que oriente
+  // esquinas Y aristas A LA VEZ (una sola búsqueda, no dos por separado) — separarlo en
+  // dos pasos independientes puede aterrizar en una permutación que el PLL no resuelve
+  // en pocos pasos; buscándolo junto, como ya hace el método guiado, sí funciona.
+  const goalOri = () => topCorners.every(orientedUp) && topEdges.every(orientedUp);
+  if (!goalOri()) {
+    const seq = await searchAlgs(state, buildCandidates([SUNE_A, ANTISUNE_A]), goalOri, 4);
+    if (!seq) return null;
+    setupMoves.push(...seq);
+  }
+  const allSolved = () => state.pieces.every(solvedP); // solvedP no exige orientación exacta a centros/núcleo
+  if (allSolved()) return null; // ya resuelto de casualidad: reintentar
+  const cands = buildCandidates([T_PERM, UA_PERM, UB_PERM, Y_PERM, JB_PERM, AA_PERM, AB_PERM]);
+  const taught = await searchAlgs(state, cands, allSolved, 3);
+  if (!taught) return null;
+  return { setupMoves, taught: simplifySeq(taught) };
+}
+async function buildPlatziPaso7Scenario() {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const s = await buildPlatziPaso7ScenarioOnce();
+    if (s && s.taught.length > 0) return s;
+  }
+  return null;
+}
+
 async function solve2x2Method(state) {
   const bottom = state.pieces.filter((p) => p.home.y === 0);
   const top = state.pieces.filter((p) => p.home.y === 1);
@@ -1274,7 +1534,7 @@ function Keycap({ move, active, dim }) {
 function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesson, pendingScan, onScanConsumed, justScanned, scanAutoFixNote, scanCandidates, scanCandidateIdx, onConfirmScanCandidate, onTryNextScanCandidate }) {
   const mountRef = useRef(null);
   const [scrambleSeq, setScrambleSeq] = useState(null);
-  const [solverStatus, setSolverStatus] = useState(null); // null | 'thinking' | 'failed'
+  const [solverStatus, setSolverStatus] = useState(null); // null | 'thinking' | 'failed' | 'solved'
   const [flipped, setFlippedState] = useState(false);
 
   useEffect(() => {
@@ -1337,10 +1597,11 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
     setBusy(true);
     setSolverStatus("thinking");
     let lesson = null;
+    let phases = null;
     try {
       await new Promise((r) => setTimeout(r, 30)); // deja pintar el estado "Resolviendo…"
       const state = engineRef.current.getAbstractState();
-      const phases = n === 2 ? await solve2x2Method(state) : await solve3x3Method(state);
+      phases = n === 2 ? await solve2x2Method(state) : await solve3x3Method(state);
       if (phases) lesson = buildLesson(phases);
     } catch (err) {
       console.error("RubikMania: error resolviendo", err);
@@ -1348,8 +1609,12 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
       setBusy(false);
     }
 
-    if (!lesson || !lesson.steps.length) {
+    if (phases === null) {
       setSolverStatus("failed");
+      return;
+    }
+    if (!lesson.steps.length) {
+      setSolverStatus("solved"); // ya estaba resuelto: 0 pasos no es un fallo
       return;
     }
     setSolverStatus(null);
@@ -1407,6 +1672,9 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
       {solverStatus === "failed" && (
         <div className="solver-note solver-note--error">No encontré la solución esta vez. Prueba a mezclar de nuevo.</div>
       )}
+      {solverStatus === "solved" && (
+        <div className="solver-note solver-note--ok">✅ ¡Tu cubo ya está resuelto! No hace falta ningún movimiento.</div>
+      )}
 
       {scrambleSeq && (
         <div className="scramble-sequence">
@@ -1423,15 +1691,16 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
 function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, onExitLesson }) {
   const inLesson = !!lesson;
   const [useManual, setUseManual] = useState(false);
-  const showManualToggle = n === 2 && !inLesson;
-  const list = n === 2 && useManual ? MANUAL_METHOD_2 : ALGORITHMS[n];
+  const showManualToggle = !inLesson && (n === 2 || n === 3);
+  const manualLabel = n === 2 ? "Método del manual del cubo" : "Método Platzi (7 pasos)";
+  const manualList = n === 2 ? MANUAL_METHOD_2 : PLATZI_METHOD_3;
+  const list = useManual ? manualList : ALGORITHMS[n];
   const [algIdx, setAlgIdx] = useState(0);
   const [stepIdx, setStepIdx] = useState(-1);
   const [isPlaying, setIsPlaying] = useState(false);
 
   // si cambiamos de cubo o de método, el índice de algoritmo anterior puede no existir ya
   useEffect(() => { setAlgIdx(0); }, [n, useManual]);
-  useEffect(() => { if (n !== 2 && useManual) setUseManual(false); }, [n, useManual]);
 
   const alg = list[algIdx];
   const [dynamicSteps, setDynamicSteps] = useState(null);
@@ -1456,12 +1725,15 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
       engineRef.current?.reset(n);
       setStepIdx(-1);
 
-      if (alg.dynamic === "paso2") {
-        const scenario = await buildManualPaso2Scenario();
+      if (alg.dynamic === "paso2" || alg.dynamic === "platzi6" || alg.dynamic === "platzi7") {
+        const builder = alg.dynamic === "paso2" ? buildManualPaso2Scenario
+          : alg.dynamic === "platzi6" ? buildPlatziPaso6Scenario
+          : buildPlatziPaso7Scenario;
+        const scenario = await builder();
         if (!scenario) return;
         for (const mv of scenario.setupMoves) {
           if (setupIdRef.current !== myId) return;
-          await engineRef.current?.applyMove(mv, 70); // preparación invisible: mezcla + "cara a mano"
+          await engineRef.current?.applyMove(mv, 70); // preparación invisible: mezcla + resolver lo anterior
         }
         if (setupIdRef.current === myId) {
           setDynamicSteps(scenario.taught.map((mv) => ({ move: mv, text: describeMove(mv) })));
@@ -1584,12 +1856,12 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
             className={`method-switch-btn ${useManual ? "method-switch-btn--active" : ""}`}
             onClick={() => { if (!busyRef.current) setUseManual(true); }}
           >
-            Método del manual del cubo
+            {manualLabel}
           </button>
         </div>
       )}
 
-      {showManualToggle && useManual && (
+      {showManualToggle && useManual && n === 2 && (
         <div className="case-detector">
           <button className="case-detector-btn" onClick={recognizeCase} disabled={busyRef.current}>
             🔍 ¿Qué solución uso para mi cara amarilla?
@@ -1665,8 +1937,8 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
             {alg.dynamic && (
               <p className="algo-note">
                 {dynamicSteps
-                  ? "Generé una mezcla nueva y ya te monté la cara de arriba a mano, como harías tú. Ahora sigue los pasos: son las aplicaciones reales del Algoritmo 1 que hacen falta para esta mezcla en concreto."
-                  : "Generando una mezcla nueva y montando la cara a mano…"}
+                  ? "Generé una mezcla nueva y resolví en silencio todo lo anterior a este paso. Ahora sigue los pasos: son los movimientos reales que hacen falta para esta mezcla en concreto."
+                  : "Generando una mezcla nueva y resolviendo lo anterior…"}
               </p>
             )}
             {alg.formula && (
@@ -2533,6 +2805,7 @@ img, svg { max-width: 100%; }
   line-height: 1.4;
 }
 .solver-note--error { color: #ff9a9a; border-color: #3a2222; background: #1d1414; }
+.solver-note--ok { color: #7fe0a8; border-color: #1e3a2a; background: #10201a; }
 
 /* ---------- algorithm card ---------- */
 .algo-card {
