@@ -1688,7 +1688,7 @@ function Stage({ engineRef, n, busyRef, busy, setBusy, onExternalChange, onLesso
   );
 }
 
-function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, onExitLesson }) {
+function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, onExitLesson, justScanned }) {
   const inLesson = !!lesson;
   const [useManual, setUseManual] = useState(false);
   const showManualToggle = !inLesson && (n === 2 || n === 3);
@@ -1757,7 +1757,22 @@ function AlgorithmPanel({ n, engineRef, busyRef, setBusy, resetSignal, lesson, o
     }
   }, [engineRef, n, alg, setBusy, inLesson]);
 
-  useEffect(() => { setupCase(); setIsPlaying(false); }, [algIdx, n, setupCase]);
+  const skippedInitialSetupRef = useRef(false);
+  useEffect(() => {
+    // Si el cubo acaba de cargarse desde un escaneo, la primera ejecución de este efecto
+    // NO debe llamar a setupCase() — esa función empieza con engineRef.current.reset(n),
+    // que borraría el cubo real recién cargado para mostrar el ejemplo de la pestaña 0.
+    // Solo se salta UNA vez (la del montaje); cualquier cambio de pestaña después de eso
+    // es una acción explícita del usuario y sí debe mostrar su demo normalmente.
+    if (justScanned && !skippedInitialSetupRef.current) {
+      skippedInitialSetupRef.current = true;
+      setIsPlaying(false);
+      return;
+    }
+    skippedInitialSetupRef.current = true;
+    setupCase();
+    setIsPlaying(false);
+  }, [algIdx, n, setupCase]);
 
   useEffect(() => { setStepIdx(-1); setIsPlaying(false); }, [lesson]);
 
@@ -2550,6 +2565,7 @@ function RubikMania() {
               resetSignal={resetSignal}
               lesson={lesson}
               onExitLesson={() => setLesson(null)}
+              justScanned={justScanned}
             />
           </div>
         ) : view === "scan" ? (
